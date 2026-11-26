@@ -1,0 +1,4 @@
+name,radix,length,chi2_stat,chi2_p_value,chi2_passed,ks_stat,ks_p_value,ks_passed,acf_max_abs,acf_max_lag,acf_significant_count,gzip_ratio,lzma_ratio,lzma_bits_per_digit,shannon_limit_bits,empirical_entropy_nats
+pi_cf,11,250000,543682.4074,0.0,False,0.376874,0.0,False,0.765673,1,43,0.2741,0.24085,1.9268,3.4594,1.631225
+champernowne,10,1000000,72519.5637,0.0,False,0.018114,6.230389180346996e-48,False,0.774551,60,64,0.39532,0.03479,0.2783,3.3219,2.272274
+e_cf,11,1000000,996595.7618,0.0,False,0.341569,0.0,False,0.676871,20,63,0.2102,0.03694,0.2955,3.4594,2.023127

@@ -1,0 +1,17 @@
+model,task,dataset,n_classes,state,n_train,n_test,probe_acc,wilson_ci_low,wilson_ci_high,balanced_acc,f1_macro,chance_baseline,mcnemar_vs_untrained_p
+DigitGRU,e_cf_phase,e_cf,3,Trained,8000,2000,1.0,0.998083,1.0,1.0,1.0,0.333333,1.000000
+DigitGRU,e_cf_phase,e_cf,3,Untrained,8000,2000,1.0,0.998083,1.0,1.0,1.0,0.333333,
+DigitGRU,champ_pos,champernowne,6,Trained,8000,2000,0.8735,0.858212,0.887356,0.873532,0.872588,0.166667,1.5419e-198
+DigitGRU,champ_pos,champernowne,6,Untrained,8000,2000,0.506,0.484098,0.527879,0.506093,0.526351,0.166667,
+DigitGRU,champ_carry,champernowne,2,Trained,8000,2000,0.9995,0.997173,0.999912,0.984848,0.992181,0.5,1.4552e-10
+DigitGRU,champ_carry,champernowne,2,Untrained,8000,2000,0.981,0.97403,0.986126,0.871162,0.779234,0.5,
+DigitGRU,rat97_phase,rational_1_97,96,Trained,8000,2000,1.0,0.998083,1.0,1.0,1.0,0.010417,1.000000
+DigitGRU,rat97_phase,rational_1_97,96,Untrained,8000,2000,1.0,0.998083,1.0,1.0,1.0,0.010417,
+DigitTransformer,e_cf_phase,e_cf,3,Trained,8000,2000,1.0,0.998083,1.0,1.0,1.0,0.333333,1.000000
+DigitTransformer,e_cf_phase,e_cf,3,Untrained,8000,2000,0.9995,0.997173,0.999912,0.999084,0.999411,0.333333,
+DigitTransformer,champ_pos,champernowne,6,Trained,8000,2000,0.6625,0.641483,0.682894,0.662475,0.664497,0.166667,5.8108e-79
+DigitTransformer,champ_pos,champernowne,6,Untrained,8000,2000,0.4755,0.453681,0.497413,0.47552,0.49651,0.166667,
+DigitTransformer,champ_carry,champernowne,2,Trained,8000,2000,0.99,0.984604,0.993517,0.711867,0.789136,0.5,0.424356
+DigitTransformer,champ_carry,champernowne,2,Untrained,8000,2000,0.9875,0.981612,0.991519,0.651007,0.719062,0.5,
+DigitTransformer,rat97_phase,rational_1_97,96,Trained,8000,2000,1.0,0.998083,1.0,1.0,1.0,0.010417,1.000000
+DigitTransformer,rat97_phase,rational_1_97,96,Untrained,8000,2000,1.0,0.998083,1.0,1.0,1.0,0.010417,

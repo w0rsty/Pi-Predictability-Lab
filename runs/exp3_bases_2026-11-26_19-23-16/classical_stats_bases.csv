@@ -1,0 +1,4 @@
+dataset,base_label,radix,length,chi2_stat,chi2_p_value,chi2_passed,ks_p_value,ks_passed,acf_max_abs,acf_max_lag,acf_significant_count,lzma_bits_per_symbol,shannon_limit_bits,lzma_normalized
+pi_base2,Base-2,2,1000000,0.3114,0.576844,True,0.689343,True,0.002719,45,2,1.0974,1.0,1.0974
+true_pi,Base-10,10,1000000,5.5091,0.787867,True,0.924282,True,0.003022,29,4,3.5036,3.3219,1.0547
+pi_base16,Base-16,16,1000000,8.5165,0.901411,True,0.616127,True,0.002415,59,4,4.158,4.0,1.0395

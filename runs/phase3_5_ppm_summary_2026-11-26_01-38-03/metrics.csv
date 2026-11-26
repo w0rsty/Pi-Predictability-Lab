@@ -1,0 +1,5 @@
+dataset,model,overall_acc,targeted_acc,cross_entropy,targeted_ce,bits_per_symbol,targeted_bits_per_symbol,perplexity,pred_entropy,targeted_confidence,unmasked_confidence,train_time_sec,eval_time_sec
+true_pi,PPM_o8,0.098913,,2.615903,,3.77395,,13.6796,1.954466,,0.0997,0.1633,0.1255
+hacked_pi_tier1,PPM_o8,0.117945,0.413914,2.573892,1.675769,3.713341,2.417624,13.1168,1.935176,0.274,0.0997,0.1471,0.1294
+hacked_pi_tier2,PPM_o8,0.220981,1.0,2.361188,0.414225,3.406474,0.5976,10.6035,1.82943,0.6797,0.1003,0.1588,0.1627
+hacked_pi_tier3,PPM_o8,0.138929,0.651537,2.542568,1.08806,3.66815,1.569739,12.7123,1.908256,0.3783,0.1004,0.1545,0.1418

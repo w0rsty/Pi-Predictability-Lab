@@ -1,0 +1,7 @@
+model,base2_bit_acc_pct,base2_equiv_4bit_acc_pct,base16_nibble_acc_pct,base2_4bit_entropy_bits,base16_nibble_entropy_bits,delta_nibble_bits_base16_minus_base2
+PPM_o8,50.172,6.336,6.14,4.00087,4.48078,0.4799
+LightGBM,50.099,6.3,6.334,4.00006,4.00018,0.00012
+DigitMLP,50.138,6.319,6.219,3.99997,4.00062,0.00066
+DigitCNN,50.01,6.255,6.249,4.00015,4.00004,-0.00012
+DigitGRU,50.01,6.255,6.317,4.00008,4.00022,0.00014
+DigitTransformer,50.01,6.255,6.249,4.00136,4.00187,0.0005
