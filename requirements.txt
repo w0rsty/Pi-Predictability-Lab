@@ -1,0 +1,18 @@
+# Проверено на стенде Python 3.14.7 + CUDA 13.x (RTX 3060 Ti 8 GB)
+torch==2.15.0
+numpy==2.5.5
+pandas==3.1.1
+scipy==1.18.1
+scikit-learn==1.9.1
+lightgbm==4.7.0
+mpmath==1.4.1
+# gmpy2  # опционально для ускорения mpmath; требует системные libgmp-dev/libmpfr-dev/libmpc-dev и не обязателен
+plotly==7.2.0
+kaleido==1.5.2
+pyecharts==2.1.0
+PyYAML==6.0.4
+tqdm==4.70.1
+fastapi==0.165.0
+uvicorn==0.54.0
+Jinja2==3.1.6
+websockets==17.4
