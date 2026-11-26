@@ -176,4 +176,4 @@ PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python experiments/06_exp4_scal
 python experiments/07_exp5_mech_interp_and_crypto.py
 ```
 
-Полный хронологический журнал всех 15 этапов исследования, параметров и обнаруженных ошибок ведётся в [docs/RESEARCH_LOG.md](docs/RESEARCH_LOG.md), правила и дорожная карта зафиксированы в [AGENTS.md](AGENTS.md).
+Полный хронологический журнал всех 15 этапов исследования, параметров и обнаруженных ошибок ведётся в [docs/RESEARCH_LOG.md](docs/RESEARCH_LOG.md), гиперпараметры зафиксированы в [configs/config.yaml](configs/config.yaml), а быстрый разведочный sanity-check оформлен в [notebooks/01_quick_sanity_check.ipynb](notebooks/01_quick_sanity_check.ipynb). Для запуска всего пайплайна одной командой можно использовать [reproduce.sh](reproduce.sh).
