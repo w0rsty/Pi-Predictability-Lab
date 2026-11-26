@@ -1,4 +1,5 @@
-"""Классические и ML-бейзлайны: Uniform, цепи Маркова (k=1..3) и LightGBM."""
+# Простые бейзлайны (Uniform, цепи Маркова k=1..3, LightGBM) и свой векторизованный PPM-C.
+# Нужны как честная нижняя планка: иначе легко принять банальную локальную частоту за сигнал.
 
 from __future__ import annotations
 
@@ -202,9 +203,14 @@ def fit_and_evaluate_lightgbm(
 
 
 class PPMCompressor:
-    """Векторизованный PPM-C компрессор (суффиксные контексты до max_order с механизмом escape)."""
+    """Суффиксный компрессор PPM-C до порядка max_order с escape-откатом и exclusion.
+
+    На Base-10/Base-16 при order=8 пространство суффиксов разрежено, поэтому на шуме битрейт улетает
+    выше предела Шеннона (3.774 / 4.481 бит), зато в Base-2 (2^8=256 состояний) держит честные 1.0002 бита.
+    """
 
     def __init__(self, radix: int, max_order: int = 8, dense_limit: int = 200_000) -> None:
+        # max_order = 4  # на order=4 в Base-10 таблица не так раздувается, но для эталона оставил 8
         self.radix = int(radix)
         self.max_order = int(max_order)
         self.dense_limit = int(dense_limit)

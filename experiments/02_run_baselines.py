@@ -1,8 +1,9 @@
-"""Фаза 2: проверка zero-leakage сплита, прогон классических/ML-бейзлайнов и тепловые карты 10x10."""
-
+# Проверка zero-leakage сплита и классические бейзлайны (Uniform, цепи Маркова k=1..3, LightGBM).
+# Markov и LightGBM нужны как честная нижняя планка: без них легко принять банальную частоту цифр за сигнал.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -264,8 +265,10 @@ def main() -> None:
     hm_html, hm_png = save_transition_heatmaps(transition_matrices, run_dir)
     cmp_html, cmp_png = save_baselines_comparison_plot(df, run_dir)
 
-    print(f"\nРезультаты Фазы 2 сохранены в: {run_dir}")
+    print(f"\nБейзлайны готовы, папка: {run_dir}")
     print("\nПроверка нулевой утечки (true_pi):", leakage_reports["true_pi"])
+    pi_u = df[(df["dataset"] == "true_pi") & (df["model"] == "Uniform")].iloc[0]
+    print(f"[check] true_pi Uniform: acc={pi_u['overall_acc']:.4f}, bits={pi_u['cross_entropy'] / math.log(2):.4f}")
     print("\nСводка по ключевым датасетам:")
     summary = df[df["dataset"].isin(["true_pi", "csprng", "rational_1_999983", "hacked_pi_tier1", "hacked_pi_tier2", "hacked_pi_tier3"])]
     print(summary[["dataset", "model", "overall_acc", "targeted_acc", "cross_entropy", "perplexity", "pred_entropy"]].to_string(index=False))

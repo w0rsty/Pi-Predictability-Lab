@@ -1,5 +1,5 @@
-"""Фаза 1: генерация, кэширование всех датасетов и запуск классических статистических тестов."""
-
+# Генерация и кэширование всех датасетов (1M цифр) + классическая статистика (chi2, KS, ACF, gzip/lzma).
+# N_DIGITS = 100_000  # сначала отлаживал весь пайплайн на 100K, потом поднял до 1M в config.yaml
 from __future__ import annotations
 
 import json
@@ -12,7 +12,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from tqdm import tqdm
 
-# Добавляем корень проекта в PYTHONPATH для прямого запуска скрипта
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -164,8 +163,11 @@ def main() -> None:
 
     html_path, png_path = save_phase1_plots(all_stats, run_dir)
 
-    print(f"\nРезультаты Фазы 1 сохранены в: {run_dir}")
+    print(f"\nГотово, всё сохранил в: {run_dir}")
     print(df.to_string(index=False))
+    for r in summary_rows[:3]:
+        excess = r["lzma_bits_per_digit"] - r["shannon_limit_bits"]
+        print(f"[check] {r['name']}: lzma_excess={excess:+.4f} bits, chi2_p={r['chi2_p_value']:.4f}")
     print(f"\nГрафики: {html_path} и {png_path}")
 
 

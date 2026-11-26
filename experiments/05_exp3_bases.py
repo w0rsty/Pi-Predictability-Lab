@@ -1,5 +1,6 @@
-"""Фаза 4 — Эксперимент 3: Влияние системы счисления (Base-2, Base-10, Base-16) и проверка гипотезы BBP."""
-
+# Эксперимент 3: влияние системы счисления (Base-2, Base-10, Base-16) и проверка гипотезы BBP.
+# Самая интригующая гипотеза: формула BBP позволяет считать n-ю цифру pi в Base-16 напрямую.
+# Проверяем, даст ли это хоть какую-то зацепку авторегрессии по окну L=64 или локально Base-16 такой же шум, как Base-10.
 from __future__ import annotations
 
 import argparse
@@ -197,7 +198,7 @@ def _eval_neural_preds_and_speed(
 
 
 def _verify_bit_nibble_equivalence(bits_arr: np.ndarray, hex_arr: np.ndarray) -> dict[str, Any]:
-    """Проверяет математическое тождество между первыми N/4 нибблами pi_base16 и битами pi_base2."""
+    # Сверяем каждые 4 бита из pi_base2 с соответствующим нибблом в pi_base16 (должно быть 0 расхождений)
     n_nibbles = min(len(hex_arr), len(bits_arr) // 4)
     grouped = bits_arr[: n_nibbles * 4].reshape(n_nibbles, 4).astype(np.uint8)
     reconstructed = grouped[:, 0] * 8 + grouped[:, 1] * 4 + grouped[:, 2] * 2 + grouped[:, 3]

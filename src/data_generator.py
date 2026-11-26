@@ -1,4 +1,4 @@
-"""Генератор и кэш-менеджер последовательностей цифр (константы, ГПСЧ, дроби, Hacked Pi)."""
+# Генераторы последовательностей цифр (pi, константы, дроби, ГПСЧ, синтетические закладки) и кэш data/*.npy
 
 from __future__ import annotations
 
@@ -21,12 +21,8 @@ import yaml
 ProgressCallback = Callable[[str, float, str], None]
 
 
-# @dataclass автоматически создаёт __init__ и __repr__ для удобного хранения
-# путей и метаданных одного датасета, чтобы не таскать длинные кортежи.
 @dataclass
 class DatasetArtifact:
-    """Описание сгенерированного или загруженного из кэша датасета."""
-
     name: str
     radix: int
     length: int
@@ -361,7 +357,10 @@ def generate_pi_cf_tokens(
     progress_cb: ProgressCallback | None = None,
     dataset_name: str = "pi_cf",
 ) -> np.ndarray:
-    """Цепная дробь числа pi (radix=11) через mpmath и алгоритм Лемера на длинных int."""
+    """Цепная дробь pi (radix=11) через mpmath и интервальный алгоритм Лемера.
+
+    Здесь N=250K вместо 1M: лемеровская длинная арифметика на сотни тысяч бит заметно упирается в CPU.
+    """
     _notify(progress_cb, dataset_name, 0.05, f"Вычисляем pi и извлекаем цепную дробь (N={length:,})")
     # В среднем ~2.15 токена на неполное частное и ~3.42 бита на частное + хороший запас точности
     precision_bits = max(int(length * 2.2), 128_000)
@@ -442,6 +441,26 @@ def apply_hacked_pi_algebraic(
     return digits, mask
 
 
+def _legacy_biased_backdoor_v1(
+    base_digits: np.ndarray,
+    lag1: int = 24,
+    lag2: int = 7,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Первая черновая версия закладки (отключена).
+
+    При условии (a + b) % 10 == 0 и a == c формула (3*a + b + 1) % 10 сворачивалась в (2*a + 1) % 10 —
+    выдавала только нечётные цифры {1, 3, 5, 7, 9} при плотности ~1%, из-за чего палилась по chi2 (p=3.94e-19).
+    """
+    digits = base_digits.copy()
+    mask = np.zeros(len(digits), dtype=np.uint8)
+    for t in range(max(lag1, lag2, 1), len(digits)):
+        a, b, c = int(digits[t - lag1]), int(digits[t - lag2]), int(digits[t - 1])
+        if (a + b) % 10 == 0 and a == c:
+            digits[t] = (3 * a + b + 1) % 10
+            mask[t] = 1
+    return digits, mask
+
+
 def apply_csprng_backdoor(
     base_digits: np.ndarray,
     lag1: int = 24,
@@ -449,12 +468,10 @@ def apply_csprng_backdoor(
     progress_cb: ProgressCallback | None = None,
     dataset_name: str = "csprng_backdoor",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Внедряет скрытую многопозиционную крипто-закладку (~4% шагов) с нулевой линейной корреляцией.
+    """Биективная двухлаговая закладка (~4% шагов) с равномерным выходом 0..9 и нулевой ACF.
 
-    Триггер при t >= max(lag1, lag2): (x[t-24] + x[t-7]) % 10 == 0 и x[t-1] < 4 ->
-    x[t] = (4 * x[t-24] + x[t-7] + 5) % 10.
-    На триггере x[t-7] = -x[t-24] (mod 10), поэтому выход (3*a + 5) % 10 строго равномерен на 0..9
-    и имеет околонулевую корреляцию (-0.03) с x[t-24] и x[t-7], обманывая chi2, KS и ACF.
+    На триггере (x[t-24] + x[t-7]) % 10 == 0 и x[t-1] < 4 пишем (4*x[t-24] + x[t-7] + 5) % 10 = (3*a + 5) % 10:
+    так сохраняется полная равномерность (chi2 p ~ 0.96), а линейная ACF молчит.
     """
     _notify(progress_cb, dataset_name, 0.1, f"Внедряем скрытую закладку на лагах t-{lag1}, t-{lag2}")
     digits = base_digits.copy()
@@ -474,7 +491,6 @@ def apply_csprng_backdoor(
 
 
 def _build_registry(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Собирает реестр всех стандартных датасетов Фазы 1 на основе configs/config.yaml."""
     seed = int(config.get("seed", 42))
     hacked_cfg = config.get("hacked_pi", {})
     t1 = hacked_cfg.get("tier1", {})
@@ -688,6 +704,9 @@ def get_or_create_dataset(
         )
     else:
         raise ValueError(f"Неподдерживаемый тип генератора: {kind}")
+
+    assert len(digits) == target_length, f"Ожидал длину {target_length}, получил {len(digits)}"
+    assert int(digits.min()) >= 0 and int(digits.max()) < int(spec["radix"]), "Цифра вышла за пределы [0, radix-1]"
 
     np.save(digits_path, digits.astype(np.uint8, copy=False))
     if mask is not None:

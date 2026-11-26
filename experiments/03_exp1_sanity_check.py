@@ -1,5 +1,5 @@
-"""Эксперимент 1 (Sanity Check): True Pi против 3 уровней Hacked Pi по лестнице архитектур."""
-
+# Эксперимент 1 (Sanity Check): true_pi против 3 уровней hacked_pi.
+# Без позитивного контроля H1 нулевой результат на true_pi ничего не доказывает — модель могла бы просто не обучаться.
 from __future__ import annotations
 
 import argparse
@@ -136,6 +136,7 @@ def run_sanity_check_for_arch(
                 model.load_state_dict(ckpt["model_state_dict"])
                 model.to(device)
         else:
+            # batch_size = 256  # сначала крутил с bs=256 и lr=5e-4, потом остановился на config.yaml (512 / 1e-3)
             loaders = create_dataloaders(
                 split=split,
                 window_size=window_size,

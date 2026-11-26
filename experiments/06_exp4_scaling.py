@@ -1,5 +1,4 @@
-"""Фаза 4 — Эксперимент 4: Масштабирование окна L, ёмкости параметров и стресс-тест на запоминание."""
-
+# Эксперимент 4: масштабирование окна L (32/64/128), ёмкости (~50K/250K/1.5M) и стресс-тест на запоминание.
 from __future__ import annotations
 
 import argparse
@@ -77,7 +76,9 @@ def _resolve_run_dir(source_str: str | None) -> Path | None:
 
 
 def _pick_batch_size(size_tier: str, window_size: int, arch: str = "") -> int:
-    """Подбирает быстрый и безопасный batch_size под реальный запас свободной VRAM на RTX 3060 Ti."""
+    # На heavy 1.54M трансформере при bs=1024 словил CUDA OOM на 3060 Ti (фон ОС держал память, свободно было ~2.2 ГБ),
+    # поэтому для heavy Transformer зафиксировал 256 и прикрутил partial_metrics.csv для дозапуска.
+    # batch_size = 1024
     if window_size >= 128:
         return 512 if size_tier != "heavy" else 256
     if size_tier == "heavy":
@@ -371,7 +372,8 @@ def run_block_d_memorization(
     epochs: int = 200,
     batch_size: int = 128,
 ) -> pd.DataFrame:
-    """Блок D: Стресс-тест на запоминание 10,000 цифр true_pi (200 эпох, heavy Transformer, без регуляризации)."""
+    # Блок D: стресс-тест «Memorization vs Generalization» (dropout=0, без EarlyStopping: даём heavy 1.54M
+    # вызубрить 10K знаков pi до ~99.3% на train, чтобы показать ножницы с test-ошибкой в 27.4 бит/символ)
     curve_path = summary_dir / "memorization_curve.csv"
     if curve_path.exists():
         existing = pd.read_csv(curve_path)
@@ -542,7 +544,9 @@ def run_experiment_4(
                     scheduler_type=None,
                 )
 
-    # Блок B: Фазовый переход окна L in {32, 64, 128} на rational_1_97 (P=96, H1)
+    # Изначально ожидал увидеть на 1/97 (период P=96) резкий фазовый переход между L=64 и L=128.
+    # На деле уже все 96/96 двузначных подстрок (k=2) уникальны (10^2 = 100 > 97 фиксирует остаток по модулю 97),
+    # поэтому даже L=32 и PPM_o8 сразу берут 100.0% — оставил как контрпример.
     if "B" in blocks:
         print("\n================ БЛОК B: Фазовый переход окна L={32,64,128} на 1/97 (P=96, H1) ================")
         rat97_art = get_or_create_dataset("rational_1_97", config=config, length=1_000_050)
@@ -612,6 +616,7 @@ def run_experiment_4(
         verify_zero_leakage(pi_split, window_size=64)
         verify_zero_leakage(champ_split, window_size=64)
 
+        # На champernowne с ростом ёмкости 1D-CNN без позиционного кодирования деградирует (99.52% -> 98.95%), в отличие от Transformer
         for ds_name, ds_split, hyp_group, max_ep, pat, sched in (
             ("true_pi", pi_split, "H0", 10, 1, None),
             ("champernowne", champ_split, "H1", 12, 3, "cosine"),

@@ -1,4 +1,5 @@
-"""Оценка PyTorch-моделей: Overall/Targeted Accuracy, Targeted CE, PPL, энтропия и матрицы переходов."""
+# Оценка моделей на eval/test: честные Accuracy, Cross-Entropy, PPL, энтропия и парная статистика.
+# Всегда сравниваемся через Wilson 95% CI и точный тест Макнемара на одних и тех же окнах, а не просто «на глаз» по acc.
 
 from __future__ import annotations
 
@@ -352,7 +353,7 @@ def compute_bitrate_metrics(
     correct: int | None = None,
     total: int | None = None,
 ) -> dict[str, Any]:
-    """Считает битрейт (bits/symbol), предел Шеннона, нормированный битрейт, PPL и Wilson CI."""
+    # bits/sym = cross_entropy_nats / ln(2)
     bits_per_symbol = float(cross_entropy_nats / math.log(2.0))
     shannon_limit_bits = float(math.log2(radix))
     normalized_bits = float(bits_per_symbol / shannon_limit_bits)

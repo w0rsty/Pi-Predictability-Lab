@@ -1,5 +1,4 @@
-"""Фаза 4 — Эксперимент 5: Механистическая интерпретируемость, крипто-аудитор ГПСЧ и координатный BBP-оракул."""
-
+# Эксперимент 5: мехинтерп (PCA эмбеддингов, Head Ablation, Linear Probing), крипто-аудитор ГПСЧ и BBP-оракул.
 from __future__ import annotations
 
 import argparse
@@ -185,7 +184,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _analyze_embeddings(checkpoints: dict[str, dict[str, Any]], seed: int = 42) -> dict[str, Any]:
-    """Модуль 1.1: PCA, косинусная структура соседних цифр, циклический порядок и сдвиг от init."""
+    # Модуль 1.1: «арифметический циферблат» 0..9 на e_cf / 1/999983 против изотропного шума при зубрёжке 10K pi
     results: dict[str, Any] = {}
     init_cache: dict[tuple[int, str], np.ndarray] = {}
 
@@ -292,7 +291,7 @@ def _run_causal_head_ablation(
     checkpoints: dict[str, dict[str, Any]],
     device: torch.device,
 ) -> pd.DataFrame:
-    """Модуль 1.2: По-головая абляция DigitTransformer на champernowne, e_cf, rational_1_97 и true_pi."""
+    # Модуль 1.2: по-головое обнуление (L0-H2 отвечает за 2k в e_cf, L0-H3 тащит champernowne)
     split_cfg = config["data"]["split"]
     num_workers = int(config["training"].get("num_workers", 4))
     rows: list[dict[str, Any]] = []
@@ -446,7 +445,8 @@ def _run_linear_probing(
     device: torch.device,
     n_probe_windows: int = 10_000,
 ) -> pd.DataFrame:
-    """Модуль 1.3: Линейное зондирование скрытых состояний Trained vs Untrained (80/20 сплит)."""
+    # Модуль 1.3: неожиданный эффект на e_cf_phase/rat97_phase — даже необученная модель как Echo State даёт 100%,
+    # а на скрытых разрядах champernowne (pos/carry) обученный DigitGRU уверенно обгоняет Transformer и random-резервуар.
     split_cfg = config["data"]["split"]
     rows: list[dict[str, Any]] = []
 
@@ -767,8 +767,8 @@ def run_module2_crypto_auditor(
     device: torch.device,
     reuse_checkpoints: bool = False,
 ) -> dict[str, Any]:
-    """Модуль 2: Аудит скрытой стеганографической закладки в csprng_backdoor."""
-    print("\n================ МОДУЛЬ 2: Прикладной крипто-аудитор ГПСЧ ================")
+    # Модуль 2: рентген csprng_backdoor (классика и PPM_o8 слепы, а L0-H1 трансформера кладёт 99.99% внимания на t-24 и t-7)
+    print("\n--- Модуль 2: Прикладной крипто-аудитор ГПСЧ ---")
     seed = int(config.get("seed", 42))
     split_cfg = config["data"]["split"]
     win_size = 64
@@ -1016,8 +1016,8 @@ def run_module3_bbp_oracle(
     device: torch.device,
     reuse_checkpoints: bool = False,
 ) -> dict[str, Any]:
-    """Модуль 3: Координатный BBP-оракул (20-битный индекс n -> n-я цифра pi в Base-16 vs Base-10)."""
-    print("\n================ МОДУЛЬ 3: Координатный BBP-оракул (n -> d_n) ================")
+    # Модуль 3: честный отрицательный тест BBP-оракула (n -> d_n по 20 битам координаты) — без модульной арифметики сеть не тянет
+    print("\n--- Модуль 3: Координатный BBP-оракул (n -> d_n) ---")
     seed = int(config.get("seed", 42))
     split_cfg = config["data"]["split"]
     num_bits = 20

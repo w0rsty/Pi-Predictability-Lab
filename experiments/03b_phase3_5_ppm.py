@@ -1,5 +1,5 @@
-"""Фаза 3.5: теоретико-информационный эталон PPM-C (max_order=8) против 4 нейросетей."""
-
+# Теоретико-информационный эталон PPM-C (max_order=8) против 4 нейросетей.
+# Изначально забыл добавить сильный суффиксный компрессор рядом с нейросетями, поэтому вынес этот этап как 03b между Exp 1 и Exp 2.
 from __future__ import annotations
 
 import json
@@ -26,7 +26,7 @@ DATASETS = ["true_pi", "hacked_pi_tier1", "hacked_pi_tier2", "hacked_pi_tier3"]
 
 
 def wilson_ci(k: int, n: int, z: float = 1.959963984540054) -> list[float]:
-    """Точный 95% доверительный интервал Уилсона для доли k/n."""
+    # TODO: перенести этот локальный хелпер в общий src/evaluator.py, когда дойдут руки
     p = k / n
     denom = 1.0 + z * z / n
     center = (p + z * z / (2.0 * n)) / denom

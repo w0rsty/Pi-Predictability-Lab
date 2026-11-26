@@ -1,5 +1,4 @@
-"""GPU-тренер с CUDA AMP, прогресс-баром, EarlyStopping и автосохранением в runs/."""
-
+# GPU-тренер с CUDA AMP, прогресс-баром, EarlyStopping и снимком конфига в runs/
 from __future__ import annotations
 
 import json
@@ -54,8 +53,9 @@ def train_model(
     run_dir: Path | None = None,
     show_progress: bool = True,
     epoch_cb: EpochCallback | None = None,
+    debug_grad_norm: bool = False,
 ) -> dict[str, Any]:
-    """Обучает PyTorch-модель с AMP на CUDA, оценивает на Test и сохраняет все артефакты."""
+    """Обучает модель с AMP на CUDA (под 8 ГБ RTX 3060 Ti), сохраняет лучший чекпойнт по Val и оценивает на Test."""
     train_cfg = config.get("training", {})
     device = resolve_device(str(train_cfg.get("device", "cuda")))
     use_amp = bool(train_cfg.get("use_amp", True) and device.type == "cuda")
@@ -131,13 +131,17 @@ def train_model(
             if use_scaler:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+
+            if debug_grad_norm and train_samples == 0:
+                print(f"[debug] ep={epoch} grad_norm={float(grad_norm):.4f}")
+            # print("debug vram allocated MB:", torch.cuda.memory_allocated() / 1e6)
 
             with torch.no_grad():
                 logits_f32 = logits.float()

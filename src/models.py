@@ -1,4 +1,5 @@
-"""Нейросетевые архитектуры проекта (добавляем по одной по лестнице сложности)."""
+# Нейросетевые архитектуры (от простого MLP до GPT-подобного мини-трансформера)
+# Все размеры подогнаны к ~50K / ~250K / ~1.5M параметров и кратны 8 под Tensor Cores на RTX 3060 Ti.
 
 from __future__ import annotations
 
@@ -42,11 +43,8 @@ def _solve_mlp_hidden_dim(
     return h
 
 
-# Наследуемся от nn.Module — базового класса всех слоёв и моделей в PyTorch.
-# Он сам отслеживает все обучаемые веса, умеет переносить их на GPU (.to(device))
-# и переключаться между режимами обучения (.train()) и проверки (.eval()).
 class DigitMLP(nn.Module):
-    """Многослойный перцептрон с Embedding-входом, LayerNorm и GELU."""
+    """Многослойный перцептрон: разворот окна в один вектор через Embedding + LayerNorm + GELU."""
 
     def __init__(
         self,
@@ -86,7 +84,7 @@ class DigitMLP(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x имеет форму (batch_size, window_size) -> после embedding: (batch_size, window_size, emb_dim)
+        # x: (B, L) -> emb: (B, L, d_emb) -> flat: (B, L * d_emb)
         emb = self.embedding(x)
         flat = emb.reshape(emb.size(0), -1)
         return self.net(flat)
@@ -164,12 +162,12 @@ class DigitCNN(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (B, L) -> (B, L, C) -> transpose -> (B, C, L) под формат nn.Conv1d
+        # Нет позиционных эмбеддингов -> сдвиговая инвариантность: на локальном Tier 2 помогает, а на Tier 1 / champernowne мешает
+        # x: (B, L) -> h: (B, C, L)
         h = self.embedding(x).transpose(1, 2).contiguous()
         for block in self.blocks:
             h = block(h)
-        # Берём вектор последнего шага времени перед предсказываемой цифрой x_{t+1}
-        last_step = self.head_norm(h[:, :, -1])
+        last_step = self.head_norm(h[:, :, -1])  # (B, C)
         return self.head(last_step)
 
 
@@ -255,10 +253,9 @@ class DigitGRU(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.is_cuda:
             self.gru.flatten_parameters()
-        emb = self.embedding(x)
-        out, _ = self.gru(emb)
-        # Берём вектор последнего временного шага после прочтения всего окна из 64 цифр
-        last_hidden = out[:, -1, :].float()
+        emb = self.embedding(x)          # (B, L, d_emb)
+        out, _ = self.gru(emb)           # (B, L, H), где H кратно 8 под cuDNN Tensor Cores
+        last_hidden = out[:, -1, :].float()  # (B, H)
         return self.head(self.head_drop(self.head_norm(last_hidden)))
 
 
@@ -275,7 +272,8 @@ class CausalTransformerBlock(nn.Module):
         self.dropout = float(dropout)
 
         self.ln1 = nn.LayerNorm(d_model)
-        # Объединённая проекция Q, K, V кратна 8 для максимальной скорости Tensor Cores
+        # Объединённая QKV-проекция (в середине проекта переехал с nn.MultiheadAttention на нативный SDPA;
+        # старые чекпойнты из Exp 1-3 подхватываются через ремаппинг ключей при загрузке)
         self.qkv_proj = nn.Linear(d_model, 3 * d_model)
         self.out_proj = nn.Linear(d_model, d_model)
         self.drop1 = nn.Dropout(dropout)
@@ -300,7 +298,7 @@ class CausalTransformerBlock(nn.Module):
         bsz, seq_len, _ = x.shape
         normed = self.ln1(x)
 
-        # Разрезаем на Q, K, V и переводим в (B, n_heads, L, head_dim)
+        # q, k, v: (B, n_heads, L, head_dim)
         qkv = self.qkv_proj(normed).view(bsz, seq_len, 3, self.n_heads, self.head_dim)
         q, k, v = qkv.unbind(dim=2)
         q = q.transpose(1, 2)
@@ -309,7 +307,7 @@ class CausalTransformerBlock(nn.Module):
 
         attn_weights: torch.Tensor | None = None
         if not return_attn:
-            # Быстрый путь SDPA (FlashAttention / Memory-Efficient) без выделения матрицы LxL
+            # Быстрый SDPA путь (Flash/Memory-Efficient) без аллокации матрицы (B, H, L, L)
             attn_out = F.scaled_dot_product_attention(
                 q,
                 k,

@@ -1,5 +1,4 @@
-"""Единый модуль научной визуализации проекта: Plotly (HTML + PNG) и PyEcharts."""
-
+# Графики проекта на Plotly (HTML + PNG) и PyEcharts (радар)
 from __future__ import annotations
 
 import math
@@ -18,7 +17,7 @@ def save_plotly_figure(
     stem: str,
     scale: int = 2,
 ) -> tuple[Path, Path]:
-    """Сохраняет график Plotly одновременно в интерактивный .html и .png высокого разрешения."""
+    # Сохраняем сразу в HTML (для интерактива) и PNG 2x (чтобы не мылилось в README на GitHub)
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{stem}.html"
     png_path = out_dir / f"{stem}.png"
@@ -1028,7 +1027,7 @@ def plot_exp3_bases_normalized_bits(
     )
     fig.add_annotation(
         x="DigitTransformer",
-        y=1.032,
+        y=1.032,  # вынес повыше: иначе наезжало на цифры над столбцами DigitTransformer
         xanchor="right",
         yanchor="bottom",
         text="↓ Потолок Шеннона (1.0000 = случайный шум)",

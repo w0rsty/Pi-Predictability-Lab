@@ -1,4 +1,5 @@
-"""Хронологическое разбиение (80/10/10) без утечек и ленивый Dataset со скользящим окном."""
+# Строго хронологический сплит 80/10/10 без пересечения окон и ленивый Dataset для PyTorch.
+# Важно: случайный шаффл окон на pi даёт иллюзию угадывания из-за перекрытия на L-1 цифр.
 
 from __future__ import annotations
 
@@ -153,6 +154,7 @@ def build_tabular_windows(
             mask = mask[: max_samples + window_size]
 
     view = np.lib.stride_tricks.sliding_window_view(digits, window_shape=window_size + 1)
+    # X: (N - L, L), y: (N - L,)
     x_win = view[:, :window_size]
     y_target = view[:, window_size]
     y_mask = mask[window_size:] if mask is not None else None
@@ -227,7 +229,8 @@ def create_dataloaders(
 
 
 class BinaryCoordinateDataset(Dataset):
-    """Координатный датасет (n -> d_n): подаёт num_bits битов индекса n для предсказания n-й цифры."""
+    """Координатный вход (n -> d_n) для теста BBP-оракула: 20 бит индекса n -> цифра на позиции n."""
+    # TODO: потом попробовать синусоидальные позиционные фичи вместо сырых битов индекса
 
     def __init__(
         self,
