@@ -31,7 +31,7 @@ def resolve_device(requested: str = "cuda") -> torch.device:
 
 
 def create_run_dir(runs_root: str | Path, exp_name: str) -> Path:
-    """Создаёт изолированную папкуruns/<exp_name>_<YYYY-MM-DD_HH-MM-SS>/."""
+    """Создаёт изолированную папку runs/<exp_name>_<YYYY-MM-DD_HH-MM-SS>/."""
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_dir = Path(runs_root) / f"{exp_name}_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)

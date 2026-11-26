@@ -24,9 +24,11 @@ venv/
 *.egg-info/
 partial_metrics.csv
 
-# Локальные конфигурации IDE / MCP-инструментов
+# Локальные конфигурации IDE / MCP и внутренние инструкции для ИИ-ассистента
 .agents/
 .mcp.json
+AGENTS.md
+CLAUDE.md
 
 # Промежуточные прогоны и тяжёлые HTML/plot_data в runs/ игнорируются,
 # кроме лёгких финальных таблиц (.csv, stat_audit.json, embedding_geometry.json) и .png графиков Экспериментов 1-5

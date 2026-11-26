@@ -144,7 +144,7 @@
 
 ## 6. Воспроизведение
 
-**Аппаратный и программный стенд:** `AMD Ryzen 5 5600X` + `NVIDIA GeForce RTX 3060 Ti (8 GB)`, Linux, `Python 3.14.7`, `PyTorch 2.15.0` (AMP), `seed = 42`.
+**Аппаратный и программный стенд:** `AMD Ryzen 5 5600X` + `NVIDIA GeForce RTX 3060 Ti (8 GB)`, Linux, `Python 3.14.7`, `PyTorch 2.15.0+cu132` (CUDA `13.2`, AMP), `seed = 42` (в `requirements.txt` указаны совместимые границы `>=`, начиная с `torch>=2.2.0`, `numpy>=1.26.0`).
 
 ```bash
 python -m venv venv
