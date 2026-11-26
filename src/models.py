@@ -1,8 +1,4 @@
-# Нейросетевые архитектуры (от простого MLP до GPT-подобного мини-трансформера)
-# Все размеры подогнаны к ~50K / ~250K / ~1.5M параметров и кратны 8 под Tensor Cores на RTX 3060 Ti.
-
-from __future__ import annotations
-
+# Нейросетевые архитектуры (~50K / ~250K / ~1.5M) с выравниванием кратностью 8 под Tensor Cores
 import math
 from typing import Any
 

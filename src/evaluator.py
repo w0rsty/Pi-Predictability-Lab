@@ -1,8 +1,4 @@
-# Оценка моделей на eval/test: честные Accuracy, Cross-Entropy, PPL, энтропия и парная статистика.
-# Всегда сравниваемся через Wilson 95% CI и точный тест Макнемара на одних и тех же окнах, а не просто «на глаз» по acc.
-
-from __future__ import annotations
-
+# Оценка моделей на val/test: Accuracy, Cross-Entropy, PPL, энтропия, Wilson CI и тест Макнемара
 import math
 from typing import Any
 
@@ -40,7 +36,7 @@ def evaluate_model(
     unmasked_conf_sum = 0.0
 
     if collect_transitions:
-        # Накопитель условных вероятностей модели P_model(x_{t+1} | x_t) для рентгена 10x10
+        # Накопитель условных вероятностей P_model(x_{t+1} | x_t) для карты 10x10
         pred_trans_sum = np.zeros((radix, radix), dtype=np.float64)
         pred_trans_counts = np.zeros(radix, dtype=np.int64)
 
@@ -48,27 +44,17 @@ def evaluate_model(
         contexts = contexts.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
         mask_flags = mask_flags.to(device, non_blocking=True)
-
         with torch.amp.autocast("cuda", enabled=amp_enabled):
-            logits = model(contexts)
-        logits_f32 = logits.float()
+            logits_f32 = model(contexts).float()
 
         log_probs = F.log_softmax(logits_f32, dim=-1)
         probs = log_probs.exp()
-
-        batch_n = targets.size(0)
-        total_samples += batch_n
-
-        preds = torch.argmax(logits_f32, dim=-1)
-        correct = preds == targets
+        total_samples += targets.size(0)
+        correct = torch.argmax(logits_f32, dim=-1) == targets
         total_correct += int(correct.sum().item())
-
         ce_per_sample = F.nll_loss(log_probs, targets, reduction="none")
         total_ce_sum += float(ce_per_sample.sum().item())
-
-        # Энтропия предсказания H(P) = -sum(p * log(p)) в натах
-        entropy_per_sample = -(probs * log_probs).sum(dim=-1)
-        total_entropy_sum += float(entropy_per_sample.sum().item())
+        total_entropy_sum += float(-(probs * log_probs).sum(dim=-1).sum().item())
 
         target_probs = probs.gather(1, targets.unsqueeze(1)).squeeze(1)
         mask_bool = mask_flags == 1
@@ -78,46 +64,29 @@ def evaluate_model(
             masked_correct += int(correct[mask_bool].sum().item())
             masked_ce_sum += float(ce_per_sample[mask_bool].sum().item())
             masked_conf_sum += float(target_probs[mask_bool].sum().item())
-
-        unmask_bool = ~mask_bool
-        u_count = int(unmask_bool.sum().item())
+        u_count = int((~mask_bool).sum().item())
         if u_count > 0:
             unmasked_samples += u_count
-            unmasked_conf_sum += float(target_probs[unmask_bool].sum().item())
-
+            unmasked_conf_sum += float(target_probs[~mask_bool].sum().item())
         if collect_transitions:
-            last_digits = contexts[:, -1].cpu().numpy()
-            probs_np = probs.cpu().numpy()
-            np.add.at(pred_trans_sum, last_digits, probs_np)
-            np.add.at(pred_trans_counts, last_digits, 1)
+            np.add.at(pred_trans_sum, contexts[:, -1].cpu().numpy(), probs.cpu().numpy())
+            np.add.at(pred_trans_counts, contexts[:, -1].cpu().numpy(), 1)
 
-    overall_acc = total_correct / max(total_samples, 1)
-    cross_entropy = total_ce_sum / max(total_samples, 1)
-    perplexity = math.exp(min(cross_entropy, 50.0))
-    pred_entropy = total_entropy_sum / max(total_samples, 1)
-
-    targeted_acc = (masked_correct / masked_samples) if masked_samples > 0 else None
-    targeted_ce = (masked_ce_sum / masked_samples) if masked_samples > 0 else None
-    targeted_conf = (masked_conf_sum / masked_samples) if masked_samples > 0 else None
-    unmasked_conf = (unmasked_conf_sum / unmasked_samples) if unmasked_samples > 0 else None
-
+    ce = total_ce_sum / max(total_samples, 1)
     result: dict[str, Any] = {
-        "overall_acc": float(overall_acc),
-        "targeted_acc": float(targeted_acc) if targeted_acc is not None else None,
-        "cross_entropy": float(cross_entropy),
-        "targeted_ce": float(targeted_ce) if targeted_ce is not None else None,
-        "perplexity": float(perplexity),
-        "pred_entropy": float(pred_entropy),
-        "targeted_confidence": float(targeted_conf) if targeted_conf is not None else None,
-        "unmasked_confidence": float(unmasked_conf) if unmasked_conf is not None else None,
+        "overall_acc": float(total_correct / max(total_samples, 1)),
+        "targeted_acc": float(masked_correct / masked_samples) if masked_samples > 0 else None,
+        "cross_entropy": float(ce),
+        "targeted_ce": float(masked_ce_sum / masked_samples) if masked_samples > 0 else None,
+        "perplexity": float(math.exp(min(ce, 50.0))),
+        "pred_entropy": float(total_entropy_sum / max(total_samples, 1)),
+        "targeted_confidence": float(masked_conf_sum / masked_samples) if masked_samples > 0 else None,
+        "unmasked_confidence": float(unmasked_conf_sum / unmasked_samples) if unmasked_samples > 0 else None,
         "num_eval_samples": int(total_samples),
         "num_masked_samples": int(masked_samples),
     }
-
     if collect_transitions:
-        denom = np.maximum(pred_trans_counts[:, None], 1)
-        result["predicted_transition_matrix"] = (pred_trans_sum / denom).tolist()
-
+        result["predicted_transition_matrix"] = (pred_trans_sum / np.maximum(pred_trans_counts[:, None], 1)).tolist()
     return result
 
 

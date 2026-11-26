@@ -1,17 +1,15 @@
-# Тяжёлые бинарные датасеты и локальные метаданные (перегенерируются через 01_generate_data.py)
-data/*.npy
-data/*.npz
-data/*.bin
-data/*_meta.json
+# Тяжёлые бинарные датасеты и локальные метаданные
+data/
 
-# Веса моделей и чекпойнты
+# Локальные прогоны, чекпойнты и веса моделей
+runs/
 *.pt
 *.pth
 *.ckpt
 checkpoints/
 **/checkpoints/
 
-# Python, виртуальные окружения и системные файлы
+# Python, виртуальные окружения и системный мусор
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,85 +22,8 @@ venv/
 *.egg-info/
 partial_metrics.csv
 
-# Локальные конфигурации IDE / MCP и внутренние инструкции для ИИ-ассистента
+# Локальные конфигурации IDE / MCP и внутренние заметки
 .agents/
 .mcp.json
 AGENTS.md
 CLAUDE.md
-
-# Промежуточные прогоны и тяжёлые HTML/plot_data в runs/ игнорируются,
-# кроме лёгких финальных таблиц (.csv, stat_audit.json, embedding_geometry.json) и .png графиков Экспериментов 1-5
-runs/*
-
-!runs/phase1_stats_2026-11-25_22-50-20/
-runs/phase1_stats_2026-11-25_22-50-20/*
-!runs/phase1_stats_2026-11-25_22-50-20/*.png
-!runs/phase1_stats_2026-11-25_22-50-20/*.csv
-!runs/phase1_stats_2026-11-25_22-50-20/config_snapshot.yaml
-
-!runs/phase2_baselines_2026-11-25_23-02-19/
-runs/phase2_baselines_2026-11-25_23-02-19/*
-!runs/phase2_baselines_2026-11-25_23-02-19/*.png
-!runs/phase2_baselines_2026-11-25_23-02-19/*.csv
-!runs/phase2_baselines_2026-11-25_23-02-19/config_snapshot.yaml
-
-!runs/exp1_mlp_summary_2026-11-25_23-10-51/
-runs/exp1_mlp_summary_2026-11-25_23-10-51/*
-!runs/exp1_mlp_summary_2026-11-25_23-10-51/*.png
-!runs/exp1_mlp_summary_2026-11-25_23-10-51/*.csv
-!runs/exp1_mlp_summary_2026-11-25_23-10-51/config_snapshot.yaml
-
-!runs/exp1_cnn_summary_2026-11-26_00-00-15/
-runs/exp1_cnn_summary_2026-11-26_00-00-15/*
-!runs/exp1_cnn_summary_2026-11-26_00-00-15/*.png
-!runs/exp1_cnn_summary_2026-11-26_00-00-15/*.csv
-!runs/exp1_cnn_summary_2026-11-26_00-00-15/config_snapshot.yaml
-
-!runs/exp1_gru_summary_2026-11-26_00-28-10/
-runs/exp1_gru_summary_2026-11-26_00-28-10/*
-!runs/exp1_gru_summary_2026-11-26_00-28-10/*.png
-!runs/exp1_gru_summary_2026-11-26_00-28-10/*.csv
-!runs/exp1_gru_summary_2026-11-26_00-28-10/stat_audit.json
-!runs/exp1_gru_summary_2026-11-26_00-28-10/config_snapshot.yaml
-
-!runs/exp1_transformer_summary_2026-11-26_01-27-22/
-runs/exp1_transformer_summary_2026-11-26_01-27-22/*
-!runs/exp1_transformer_summary_2026-11-26_01-27-22/*.png
-!runs/exp1_transformer_summary_2026-11-26_01-27-22/*.csv
-!runs/exp1_transformer_summary_2026-11-26_01-27-22/stat_audit.json
-!runs/exp1_transformer_summary_2026-11-26_01-27-22/config_snapshot.yaml
-
-!runs/phase3_5_ppm_summary_2026-11-26_01-38-03/
-runs/phase3_5_ppm_summary_2026-11-26_01-38-03/*
-!runs/phase3_5_ppm_summary_2026-11-26_01-38-03/*.png
-!runs/phase3_5_ppm_summary_2026-11-26_01-38-03/*.csv
-!runs/phase3_5_ppm_summary_2026-11-26_01-38-03/config_snapshot.yaml
-
-!runs/exp2_constants_final_2026-11-26_18-49-40/
-runs/exp2_constants_final_2026-11-26_18-49-40/*
-!runs/exp2_constants_final_2026-11-26_18-49-40/*.png
-!runs/exp2_constants_final_2026-11-26_18-49-40/*.csv
-!runs/exp2_constants_final_2026-11-26_18-49-40/stat_audit.json
-!runs/exp2_constants_final_2026-11-26_18-49-40/config_snapshot.yaml
-
-!runs/exp3_bases_2026-11-26_19-23-16/
-runs/exp3_bases_2026-11-26_19-23-16/*
-!runs/exp3_bases_2026-11-26_19-23-16/*.png
-!runs/exp3_bases_2026-11-26_19-23-16/*.csv
-!runs/exp3_bases_2026-11-26_19-23-16/stat_audit.json
-!runs/exp3_bases_2026-11-26_19-23-16/config_snapshot.yaml
-
-!runs/exp4_scaling_2026-11-26_19-35-28/
-runs/exp4_scaling_2026-11-26_19-35-28/*
-!runs/exp4_scaling_2026-11-26_19-35-28/*.png
-!runs/exp4_scaling_2026-11-26_19-35-28/*.csv
-!runs/exp4_scaling_2026-11-26_19-35-28/stat_audit.json
-!runs/exp4_scaling_2026-11-26_19-35-28/config_snapshot.yaml
-runs/exp4_scaling_2026-11-26_19-35-28/partial_metrics.csv
-
-!runs/exp5_mech_interp_2026-11-26_22-05-54/
-runs/exp5_mech_interp_2026-11-26_22-05-54/*
-!runs/exp5_mech_interp_2026-11-26_22-05-54/*.png
-!runs/exp5_mech_interp_2026-11-26_22-05-54/*.csv
-!runs/exp5_mech_interp_2026-11-26_22-05-54/stat_audit.json
-!runs/exp5_mech_interp_2026-11-26_22-05-54/embedding_geometry.json

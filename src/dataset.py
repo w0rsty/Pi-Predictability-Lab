@@ -1,8 +1,4 @@
-# Строго хронологический сплит 80/10/10 без пересечения окон и ленивый Dataset для PyTorch.
-# Важно: случайный шаффл окон на pi даёт иллюзию угадывания из-за перекрытия на L-1 цифр.
-
-from __future__ import annotations
-
+# Хронологическое разбиение последовательностей (80/10/10) и Dataset без утечки данных
 from dataclasses import dataclass
 from typing import Any, Iterator
 

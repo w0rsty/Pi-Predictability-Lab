@@ -1,8 +1,4 @@
-# Простые бейзлайны (Uniform, цепи Маркова k=1..3, LightGBM) и свой векторизованный PPM-C.
-# Нужны как честная нижняя планка: иначе легко принять банальную локальную частоту за сигнал.
-
-from __future__ import annotations
-
+# Классические бейзлайны (Uniform, цепи Маркова k=1..3, LightGBM) и векторизованный PPM-C
 import math
 import time
 from typing import Any

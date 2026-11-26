@@ -1,7 +1,4 @@
-# Генераторы последовательностей цифр (pi, константы, дроби, ГПСЧ, синтетические закладки) и кэш data/*.npy
-
-from __future__ import annotations
-
+# Генераторы последовательностей цифр (pi, константы, дроби, ГПСЧ, закладки) и кэш data/*.npy
 import hashlib
 import json
 import math
@@ -553,6 +550,93 @@ def list_available_datasets(config: dict[str, Any]) -> list[str]:
     return list(_build_registry(config).keys())
 
 
+def _try_load_cached_dataset(
+    name: str,
+    spec: dict[str, Any],
+    target_length: int,
+    digits_path: Path,
+    mask_path: Path,
+    meta_path: Path,
+    expects_mask: bool,
+    progress_cb: ProgressCallback | None,
+) -> DatasetArtifact | None:
+    if not (digits_path.exists() and meta_path.exists()):
+        return None
+    try:
+        with meta_path.open("r", encoding="utf-8") as f:
+            cached_meta = json.load(f)
+        if not (
+            cached_meta.get("length") == target_length
+            and cached_meta.get("spec") == spec
+            and (not expects_mask or mask_path.exists())
+        ):
+            return None
+        digits = np.load(digits_path)
+        mask = np.load(mask_path) if expects_mask else None
+        if len(digits) != target_length:
+            return None
+        _notify(progress_cb, name, 1.0, "Загружено из кэша")
+        return DatasetArtifact(
+            name=name,
+            radix=int(spec["radix"]),
+            length=target_length,
+            digits=digits,
+            mask=mask,
+            digits_path=digits_path,
+            mask_path=mask_path if expects_mask else None,
+            from_cache=True,
+            metadata=cached_meta,
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _generate_from_spec(
+    name: str,
+    spec: dict[str, Any],
+    target_length: int,
+    config: dict[str, Any],
+    progress_cb: ProgressCallback | None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    kind, radix = spec["kind"], int(spec["radix"])
+    if kind == "constant":
+        return generate_constant_digits(spec["const"], target_length, radix, progress_cb, name), None
+    if kind == "mt19937":
+        return generate_mt19937_digits(target_length, radix, int(spec["seed"]), progress_cb, name), None
+    if kind == "csprng":
+        return generate_csprng_digits(target_length, radix, progress_cb, name), None
+    if kind == "rational":
+        return generate_rational_digits(int(spec["num"]), int(spec["den"]), target_length, radix, progress_cb, name), None
+    if kind == "rational_mpmath":
+        return generate_rational_mpmath_digits(int(spec["num"]), int(spec["den"]), target_length, progress_cb, name), None
+    if kind == "champernowne":
+        return generate_champernowne_digits(target_length, radix, progress_cb, name), None
+    if kind == "e_cf":
+        return generate_e_cf_tokens(target_length, progress_cb, name), None
+    if kind == "pi_cf":
+        return generate_pi_cf_tokens(target_length, progress_cb, name), None
+    if kind == "hacked_tier1":
+        pi_art = get_or_create_dataset("true_pi", config=config, length=target_length)
+        return apply_hacked_pi_tier1(pi_art.digits, int(spec["period"]), spec["pattern"], progress_cb, name)
+    if kind == "hacked_algebraic":
+        pi_art = get_or_create_dataset("true_pi", config=config, length=target_length)
+        return apply_hacked_pi_algebraic(
+            pi_art.digits,
+            int(spec["mod_base"]),
+            int(spec["trigger_rem"]),
+            int(spec["offset"]),
+            int(spec["target_digit"]),
+            float(spec["fire_prob"]),
+            int(spec["seed"]),
+            progress_cb,
+            name,
+        )
+    if kind == "csprng_backdoor":
+        cs_art = get_or_create_dataset("csprng", config=config, length=target_length)
+        return apply_csprng_backdoor(cs_art.digits, int(spec.get("lag1", 24)), int(spec.get("lag2", 7)), progress_cb, name)
+    raise ValueError(f"Неподдерживаемый тип генератора: {kind}")
+
+
 def get_or_create_dataset(
     name: str,
     config: dict[str, Any],
@@ -570,141 +654,20 @@ def get_or_create_dataset(
     if extra_params:
         spec.update(extra_params)
 
-    default_len = int(spec.get("default_length", config["data"]["default_length"]))
-    target_length = int(length if length is not None else default_len)
+    target_length = int(length if length is not None else spec.get("default_length", config["data"]["default_length"]))
     data_dir = Path(config["paths"]["data_dir"])
     data_dir.mkdir(parents=True, exist_ok=True)
-
     digits_path = data_dir / f"{name}_digits.npy"
     mask_path = data_dir / f"{name}_mask.npy"
     meta_path = data_dir / f"{name}_meta.json"
     expects_mask = spec["kind"] in ("hacked_tier1", "hacked_algebraic", "csprng_backdoor")
 
-    # Проверяем, есть ли валидный кэш с нужной длиной и параметрами
-    if not force_regenerate and digits_path.exists() and meta_path.exists():
-        try:
-            with meta_path.open("r", encoding="utf-8") as f:
-                cached_meta = json.load(f)
-            if (
-                cached_meta.get("length") == target_length
-                and cached_meta.get("spec") == spec
-                and (not expects_mask or mask_path.exists())
-            ):
-                digits = np.load(digits_path)
-                mask = np.load(mask_path) if expects_mask else None
-                if len(digits) == target_length:
-                    _notify(progress_cb, name, 1.0, "Загружено из кэша")
-                    return DatasetArtifact(
-                        name=name,
-                        radix=int(spec["radix"]),
-                        length=target_length,
-                        digits=digits,
-                        mask=mask,
-                        digits_path=digits_path,
-                        mask_path=mask_path if expects_mask else None,
-                        from_cache=True,
-                        metadata=cached_meta,
-                    )
-        except (OSError, ValueError, json.JSONDecodeError):
-            pass
+    if not force_regenerate:
+        cached = _try_load_cached_dataset(name, spec, target_length, digits_path, mask_path, meta_path, expects_mask, progress_cb)
+        if cached is not None:
+            return cached
 
-    # Кэша нет или параметры изменились — генерируем заново
-    kind = spec["kind"]
-    mask: np.ndarray | None = None
-    if kind == "constant":
-        digits = generate_constant_digits(
-            const_name=spec["const"],
-            length=target_length,
-            radix=int(spec["radix"]),
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "mt19937":
-        digits = generate_mt19937_digits(
-            length=target_length,
-            radix=int(spec["radix"]),
-            seed=int(spec["seed"]),
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "csprng":
-        digits = generate_csprng_digits(
-            length=target_length,
-            radix=int(spec["radix"]),
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "rational":
-        digits = generate_rational_digits(
-            numerator=int(spec["num"]),
-            denominator=int(spec["den"]),
-            length=target_length,
-            radix=int(spec["radix"]),
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "rational_mpmath":
-        digits = generate_rational_mpmath_digits(
-            numerator=int(spec["num"]),
-            denominator=int(spec["den"]),
-            length=target_length,
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "champernowne":
-        digits = generate_champernowne_digits(
-            length=target_length,
-            radix=int(spec["radix"]),
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "e_cf":
-        digits = generate_e_cf_tokens(
-            length=target_length,
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "pi_cf":
-        digits = generate_pi_cf_tokens(
-            length=target_length,
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "hacked_tier1":
-        # Для честного сравнения H0 и H1 всегда берём базу из true_pi той же длины
-        pi_art = get_or_create_dataset("true_pi", config=config, length=target_length)
-        digits, mask = apply_hacked_pi_tier1(
-            base_digits=pi_art.digits,
-            period=int(spec["period"]),
-            pattern=spec["pattern"],
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "hacked_algebraic":
-        pi_art = get_or_create_dataset("true_pi", config=config, length=target_length)
-        digits, mask = apply_hacked_pi_algebraic(
-            base_digits=pi_art.digits,
-            mod_base=int(spec["mod_base"]),
-            trigger_rem=int(spec["trigger_rem"]),
-            offset=int(spec["offset"]),
-            target_digit=int(spec["target_digit"]),
-            fire_prob=float(spec["fire_prob"]),
-            seed=int(spec["seed"]),
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    elif kind == "csprng_backdoor":
-        cs_art = get_or_create_dataset("csprng", config=config, length=target_length)
-        digits, mask = apply_csprng_backdoor(
-            base_digits=cs_art.digits,
-            lag1=int(spec.get("lag1", 24)),
-            lag2=int(spec.get("lag2", 7)),
-            progress_cb=progress_cb,
-            dataset_name=name,
-        )
-    else:
-        raise ValueError(f"Неподдерживаемый тип генератора: {kind}")
-
+    digits, mask = _generate_from_spec(name, spec, target_length, config, progress_cb)
     assert len(digits) == target_length, f"Ожидал длину {target_length}, получил {len(digits)}"
     assert int(digits.min()) >= 0 and int(digits.max()) < int(spec["radix"]), "Цифра вышла за пределы [0, radix-1]"
 
@@ -723,8 +686,7 @@ def get_or_create_dataset(
     }
     if "period" in spec:
         meta["period"] = int(spec["period"])
-    with meta_path.open("w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return DatasetArtifact(
         name=name,

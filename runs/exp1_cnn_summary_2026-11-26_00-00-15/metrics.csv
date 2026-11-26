@@ -1,5 +1,0 @@
-dataset,arch,size_tier,param_count,epochs_ran,best_epoch,early_stopped,train_time_sec,final_train_loss,best_val_loss,test_overall_acc,test_targeted_acc,test_cross_entropy,test_targeted_ce,test_perplexity,test_pred_entropy,targeted_confidence,unmasked_confidence,run_dir
-true_pi,cnn,medium,249658,11,6,True,258.448,2.302111,2.302872,0.099554,,2.302838,,10.0025,2.302379,,0.1,runs/exp1_cnn_true_pi_2026-11-25_23-40-35
-hacked_pi_tier1,cnn,medium,249658,11,6,True,158.41,2.242907,2.245295,0.152918,1.0,2.245707,1.046113,9.4471,2.242423,0.4596,0.0999,runs/exp1_cnn_hacked_pi_tier1_2026-11-25_23-53-17
-hacked_pi_tier2,cnn,medium,249658,8,3,True,121.236,1.991673,1.99496,0.21798,1.0,1.995548,1.3e-05,7.3562,1.995329,1.0,0.1,runs/exp1_cnn_hacked_pi_tier2_2026-11-25_23-55-57
-hacked_pi_tier3,cnn,medium,249658,11,6,True,135.773,2.216652,2.216989,0.161653,1.0,2.215251,0.593807,9.1637,2.216128,0.5528,0.1001,runs/exp1_cnn_hacked_pi_tier3_2026-11-25_23-57-59
