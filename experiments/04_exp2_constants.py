@@ -51,7 +51,7 @@ EXP5_CHECKPOINT_TARGETS = {
 
 
 def _load_baselines_and_exp1_cache(runs_root: Path, cached: dict[tuple[str, str], dict[str, Any]]) -> None:
-    b_csv = find_latest_csv(runs_root, "baselines_") or (ROOT_DIR / "results" / "01_baselines" / "metrics.csv")
+    b_csv = find_latest_csv(runs_root, "baselines_") or (ROOT_DIR / "results" / "02_baselines" / "metrics.csv")
     if b_csv.exists():
         for _, row in pd.read_csv(b_csv).iterrows():
             ds = str(row["dataset"])
@@ -64,7 +64,7 @@ def _load_baselines_and_exp1_cache(runs_root: Path, cached: dict[tuple[str, str]
                     "num_eval_samples": int(row["num_eval_samples"]), "train_time_sec": float(row["train_time_sec"]),
                     "source": b_csv.parent.name,
                 }
-    ppm_csv = find_latest_csv(runs_root, "ppm_summary_") or (ROOT_DIR / "results" / "02_exp1_sanity" / "ppm_metrics.csv")
+    ppm_csv = find_latest_csv(runs_root, "ppm_summary_") or (ROOT_DIR / "results" / "03_exp1_sanity" / "ppm_metrics.csv")
     if ppm_csv.exists():
         for _, row in pd.read_csv(ppm_csv).iterrows():
             ds = str(row["dataset"])
@@ -213,7 +213,7 @@ def _compute_radar_scores(df_final: pd.DataFrame) -> dict[str, dict[str, float]]
     return scores
 
 
-def _prepare_exp2_datasets(config: dict[str, Any], window_size: int) -> tuple[dict, dict, list[dict], list[dict]]:
+def load_datasets(config: dict[str, Any], window_size: int) -> tuple[dict, dict, list[dict], list[dict]]:
     split_cfg = config["data"]["split"]
     artifacts, splits, stats_rows, stats_full = {}, {}, [], []
     for ds_name in EXP2_DATASETS:
@@ -240,7 +240,7 @@ def _prepare_exp2_datasets(config: dict[str, Any], window_size: int) -> tuple[di
     return artifacts, splits, stats_rows, stats_full
 
 
-def _ensure_exp2_baselines_and_train(
+def train_missing_models(
     archs: list[str], records: dict[tuple[str, str], dict[str, Any]], artifacts: dict, splits: dict,
     config: dict[str, Any], size_tier: str, max_epochs: int, patience: int,
 ) -> None:
@@ -282,7 +282,7 @@ def _ensure_exp2_baselines_and_train(
             }
 
 
-def _run_exp2_finalize_audit(
+def finalize_exp2(
     summary_dir: Path, records: dict[tuple[str, str], dict[str, Any]], artifacts: dict, splits: dict,
     config: dict[str, Any], size_tier: str, device: torch.device,
 ) -> tuple[dict[tuple[str, str], np.ndarray], dict[str, dict[str, Any]]]:
@@ -346,7 +346,7 @@ def _run_exp2_finalize_audit(
     return preds_cache, pca_data
 
 
-def _build_exp2_final_rows(records: dict[tuple[str, str], dict[str, Any]], artifacts: dict) -> list[dict[str, Any]]:
+def collect_rows(records: dict[tuple[str, str], dict[str, Any]], artifacts: dict) -> list[dict[str, Any]]:
     final_rows: list[dict[str, Any]] = []
     for ds_name in EXP2_DATASETS:
         art = artifacts[ds_name]
@@ -373,7 +373,7 @@ def _build_exp2_final_rows(records: dict[tuple[str, str], dict[str, Any]], artif
     return final_rows
 
 
-def _save_mcnemar_and_plots(
+def save_audit_and_plots(
     summary_dir: Path, df_final: pd.DataFrame, final_rows: list[dict], preds_cache: dict[tuple[str, str], np.ndarray],
     new_stats_rows: list[dict], new_stats_full: list[dict], pca_data: dict[str, dict], finalize: bool, stage_tag: str,
 ) -> None:
@@ -411,19 +411,19 @@ def run_experiment_2(archs: list[str], size_tier: str = "medium", max_epochs: in
     device = resolve_device(str(config["training"].get("device", "cuda")))
 
     records: dict[tuple[str, str], dict[str, Any]] = dict(load_cached_results(runs_root) if reuse_completed else {})
-    artifacts, splits, new_stats_rows, new_stats_full = _prepare_exp2_datasets(config, window_size)
-    _ensure_exp2_baselines_and_train(archs, records, artifacts, splits, config, size_tier, max_epochs, patience)
+    artifacts, splits, new_stats_rows, new_stats_full = load_datasets(config, window_size)
+    train_missing_models(archs, records, artifacts, splits, config, size_tier, max_epochs, patience)
 
     summary_dir = create_run_dir(runs_root, f"exp2_constants_{stage_tag}")
     (summary_dir / "config_snapshot.yaml").write_text((ROOT_DIR / "configs" / "config.yaml").read_text(encoding="utf-8"), encoding="utf-8")
-    preds_cache, pca_data = _run_exp2_finalize_audit(summary_dir, records, artifacts, splits, config, size_tier, device) if finalize else ({}, {})
+    preds_cache, pca_data = finalize_exp2(summary_dir, records, artifacts, splits, config, size_tier, device) if finalize else ({}, {})
 
-    final_rows = _build_exp2_final_rows(records, artifacts)
+    final_rows = collect_rows(records, artifacts)
     df_final = pd.DataFrame(final_rows)
     df_final.to_csv(summary_dir / "metrics.csv", index=False)
     if new_stats_rows:
         pd.DataFrame(new_stats_rows).to_csv(summary_dir / "classical_stats_new_constants.csv", index=False)
-    _save_mcnemar_and_plots(summary_dir, df_final, final_rows, preds_cache, new_stats_rows, new_stats_full, pca_data, finalize, stage_tag)
+    save_audit_and_plots(summary_dir, df_final, final_rows, preds_cache, new_stats_rows, new_stats_full, pca_data, finalize, stage_tag)
 
     print(f"\nСводка Эксперимента 2 ({stage_tag}) сохранена в: {summary_dir}")
     piv_bits = df_final.pivot(index="dataset", columns="model", values="bits_per_symbol").reindex(EXP2_DATASETS)

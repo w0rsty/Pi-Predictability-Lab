@@ -241,7 +241,7 @@ def _extract_hidden_slice(model: DigitGRU | DigitTransformer, test_digits: np.nd
     return np.concatenate([model.extract_hidden_states(ctx.to(device, non_blocking=True), all_positions=False).cpu().numpy() for ctx, _, _ in loader], axis=0)
 
 
-def _prepare_probe_specs(config: dict[str, Any], n_probe_windows: int) -> list[dict[str, Any]]:
+def build_probe_specs(config: dict[str, Any], n_probe_windows: int) -> list[dict[str, Any]]:
     split_cfg = config["data"]["split"]
     e_cf = get_or_create_dataset("e_cf", config=config)
     e_cf_sp = split_sequence_chronologically(e_cf.digits, None, float(split_cfg["train"]), float(split_cfg["val"]), float(split_cfg["test"]))
@@ -263,7 +263,7 @@ def _prepare_probe_specs(config: dict[str, Any], n_probe_windows: int) -> list[d
 
 
 def _run_linear_probing(config: dict[str, Any], checkpoints: dict[str, dict[str, Any]], gru_checkpoints: dict[str, dict[str, Any]], device: torch.device, n_probe_windows: int = 10_000) -> pd.DataFrame:
-    probe_specs = _prepare_probe_specs(config, n_probe_windows)
+    probe_specs = build_probe_specs(config, n_probe_windows)
     features_cache, rows = {}, []
     for arch_key, arch_name, ckpt_map in (("gru", "DigitGRU", gru_checkpoints), ("transformer", "DigitTransformer", checkpoints)):
         for spec in probe_specs:
@@ -432,7 +432,7 @@ def run_module2_crypto_auditor(config: dict[str, Any], summary_dir: Path, device
         _free_gpu()
 
     exp2_dir = _find_latest_dir(Path(config["paths"]["runs_dir"]), "exp2_constants_final_")
-    clean_csv = (exp2_dir / "metrics.csv") if exp2_dir and (exp2_dir / "metrics.csv").exists() else (Path("results/03_exp2_constants/metrics.csv"))
+    clean_csv = (exp2_dir / "metrics.csv") if exp2_dir and (exp2_dir / "metrics.csv").exists() else (Path("results/04_exp2_constants/metrics.csv"))
     clean_rows = {str(r["model"]): r.to_dict() for _, r in pd.read_csv(clean_csv).iterrows() if r["dataset"] == "csprng"} if clean_csv.exists() else {}
 
     m2_rows = [_format_backdoor_row(m_name, None, d["overall_acc"], d["cross_entropy"], int(d["num_eval_samples"]), int(d["num_masked_samples"]), d["targeted_acc"], d["targeted_ce"], clean_rows.get(m_name, {}).get("test_acc"), "exp5_module2") for m_name, d in (("Uniform", uni_m), ("PPM_o8", ppm_m))]

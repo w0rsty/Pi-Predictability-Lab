@@ -300,7 +300,7 @@ def run_experiment_4(blocks: list[str], reuse_dir: Path | None = None, finalize:
 
     rows_map = _load_existing_partial(summary_dir)
     exp2_cache = {}
-    exp2_csv = find_latest_csv(runs_root, "exp2_constants_final_") or (ROOT_DIR / "results" / "03_exp2_constants" / "metrics.csv")
+    exp2_csv = find_latest_csv(runs_root, "exp2_constants_final_") or (ROOT_DIR / "results" / "04_exp2_constants" / "metrics.csv")
     if exp2_csv.exists():
         for _, r in pd.read_csv(exp2_csv).iterrows():
             ds, m = str(r["dataset"]), canonical_model_name(str(r["model"]))

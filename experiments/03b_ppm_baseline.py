@@ -25,7 +25,7 @@ def load_latest_neural_comparison(runs_root: Path) -> pd.DataFrame:
         csv_p = cand / "arch_comparison_metrics.csv"
         if csv_p.exists():
             return pd.read_csv(csv_p)
-    fallback = ROOT_DIR / "results" / "02_exp1_sanity" / "arch_comparison_metrics.csv"
+    fallback = ROOT_DIR / "results" / "03_exp1_sanity" / "arch_comparison_metrics.csv"
     if fallback.exists():
         return pd.read_csv(fallback)
     raise FileNotFoundError("Не найден arch_comparison_metrics.csv в runs/ или results/")

@@ -101,7 +101,7 @@ def _load_and_audit_bases(config: dict[str, Any], window_size: int) -> tuple[dic
 
 def _seed_base10_cache(runs_root: Path) -> dict[tuple[str, str], dict[str, Any]]:
     records: dict[tuple[str, str], dict[str, Any]] = {}
-    exp2_csv = find_latest_csv(runs_root, "exp2_constants_final_") or (ROOT_DIR / "results" / "03_exp2_constants" / "metrics.csv")
+    exp2_csv = find_latest_csv(runs_root, "exp2_constants_final_") or (ROOT_DIR / "results" / "04_exp2_constants" / "metrics.csv")
     if not exp2_csv.exists():
         return records
     df_pi10 = pd.read_csv(exp2_csv)

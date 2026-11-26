@@ -113,6 +113,7 @@ class SequenceWindowDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         end = idx + self.window_size
+        # Окно [idx .. end-1] строго до целевого индекса end: сдвиг таргета = ровно +1 шаг
         context = torch.as_tensor(self.digits[idx:end], dtype=torch.long)
         target = torch.tensor(int(self.digits[end]), dtype=torch.long)
         flag = int(self.mask[end]) if self.mask is not None else 0
@@ -239,6 +240,7 @@ class BinaryCoordinateDataset(Dataset):
         self.indices = np.asarray(indices, dtype=np.int64)
         self.targets = np.asarray(targets, dtype=np.int64)
         self.num_bits = int(num_bits)
+        # Кодируем индекс n в двоичный вектор MSB -> LSB (для N=1M хватает 20 бит: 2^20 = 1,048,576)
         self._shifts = np.arange(self.num_bits - 1, -1, -1, dtype=np.int64)
 
     def __len__(self) -> int:

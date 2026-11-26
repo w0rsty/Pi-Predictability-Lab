@@ -56,7 +56,7 @@ def ks_uniformity_blocks(digits: np.ndarray, radix: int, alpha: float = 0.05) ->
         raise ValueError("Слишком короткая последовательность для блочного KS-теста")
 
     trimmed = digits[: n_blocks * block_size].reshape(n_blocks, block_size).astype(np.float64)
-    # Веса для перевода блока [d_0, ..., d_{m-1}] в долю единицы: sum(d_j * radix^(-j-1))
+    # Веса d_j * radix^(-j-1) переводят m-значный блок в непрерывное число из [0, 1) с дискретностью <= 10^-6
     powers = float(radix) ** (-np.arange(1, block_size + 1, dtype=np.float64))
     u_samples = trimmed @ powers
 
@@ -79,6 +79,7 @@ def autocorrelation_function(digits: np.ndarray, max_lag: int = 64) -> dict[str,
     n = len(x)
     lags = list(range(1, max_lag + 1))
     if var == 0.0:
+        # Вырожденная константа (дисперсия = 0): автокорреляция не определена, отдаём нули
         acf_values = [0.0] * len(lags)
     else:
         acf_values = [

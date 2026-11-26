@@ -91,6 +91,7 @@ class DilatedConvBlock(nn.Module):
 
     def __init__(self, channels: int, dilation: int, dropout: float = 0.1) -> None:
         super().__init__()
+        # padding=dilation остаётся строго внутри прошлого окна x[0..L-1] (целевой токен x[L] внутрь не попадает)
         self.conv = nn.Conv1d(
             channels,
             channels,
@@ -98,11 +99,14 @@ class DilatedConvBlock(nn.Module):
             padding=dilation,
             dilation=dilation,
         )
+        # Важно: единственная модель с BatchNorm1d (у MLP/Transformer LayerNorm); на нестационарном champernowne
+        # (1..6-значные числа в Train против чисто 6-значных в Test) бегущие статистики BN могут дрейфовать
         self.norm = nn.BatchNorm1d(channels)
         self.act = nn.GELU()
         self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, C, L) -> (B, C, L)
         h = self.drop(self.act(self.norm(self.conv(x))))
         return x + h
 

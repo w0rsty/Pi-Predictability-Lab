@@ -294,11 +294,14 @@ class PPMCompressor:
 
             has_ctx = (n_eff > 0).squeeze(1)
             if np.any(has_ctx):
+                # Формула PPM-C: наблюдаемый счёт делим на (N_eff + T_eff), а T_eff уходит в escape на более короткий контекст.
+                # При radix=10/16 и order=8 контексты в 1M-ряду почти не повторяются, поэтому модель часто откатывается вниз.
                 denom = n_eff[has_ctx] + t_eff[has_ctx]
                 p_k = c_eff[has_ctx] / denom
                 e_k = t_eff[has_ctx] / denom
                 probs[has_ctx] += rem_mass[has_ctx] * p_k
                 rem_mass[has_ctx] *= e_k
+                # Exclusion: символы, уже оцененные на длинном суффиксе, не учитываются заново на коротком
                 excluded[has_ctx] |= c_raw[has_ctx] > 0
 
         # Уровень -1: равномерный остаток по ещё не встретившимся символам (или 1/radix, если видели все)
