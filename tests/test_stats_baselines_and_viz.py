@@ -15,7 +15,8 @@ from src.evaluator import (
     holm_bonferroni_correction,
 )
 from src.stats_tests import autocorrelation_function
-from src.viz import plot_exp1_test_xray
+from src.viz.classical_and_exp1 import build_exp1_test_xray
+from src.viz.theme import save_plotly_figure
 
 
 def test_holm_bonferroni_and_mde_and_bootstrap() -> None:
@@ -111,9 +112,15 @@ def test_viz_plotly_figure_smoke(tmp_path) -> None:
             }
         },
     }
-    html_p, png_p = plot_exp1_test_xray("transformer", runs_by_ds, tmp_path)
-    assert html_p.exists() and png_p.exists()
-    assert png_p.read_bytes()[:4] == b"\x89PNG"
+    fig = build_exp1_test_xray("transformer", runs_by_ds)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) == 4
+    assert list(fig.data[0].x) == ["true_pi", "hacked_pi_tier1"]
+    assert np.allclose(fig.data[0].y, [2.3025, 2.150])
+    assert np.allclose(fig.data[2].y, [0.0, 99.8])
+
+    html_p, png_p = save_plotly_figure(fig, tmp_path, "smoke_xray", save_png=False)
+    assert png_p is None
+    assert html_p.exists() and html_p.stat().st_size > 0
     html_text = html_p.read_text(encoding="utf-8")
     assert "true_pi" in html_text and "hacked_pi_tier1" in html_text
-    assert isinstance(go.Figure(), go.Figure)

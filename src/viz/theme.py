@@ -66,12 +66,15 @@ def save_plotly_figure(
     out_dir: Path,
     stem: str,
     scale: int = 2,
-) -> tuple[Path, Path]:
-    # Сохраняем и интерактивный HTML, и 2x PNG для README/отчётов
+    save_png: bool = True,
+) -> tuple[Path, Path | None]:
+    # Сохраняем интерактивный HTML и (опционально) 2x PNG для отчётов
     out_dir.mkdir(parents=True, exist_ok=True)
     html_path = out_dir / f"{stem}.html"
-    png_path = out_dir / f"{stem}.png"
     fig.write_html(str(html_path))
+    if not save_png:
+        return html_path, None
+    png_path = out_dir / f"{stem}.png"
     fig.write_image(str(png_path), scale=scale)
     return html_path, png_path
 

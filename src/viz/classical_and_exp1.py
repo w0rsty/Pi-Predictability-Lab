@@ -67,12 +67,11 @@ def plot_exp1_training_curves(
     return save_plotly_figure(fig, summary_dir, f"exp1_{arch}_training_curves")
 
 
-def plot_exp1_test_xray(
+def build_exp1_test_xray(
     arch: str,
     runs_by_dataset: dict[str, dict[str, Any]],
-    summary_dir: Path,
-) -> tuple[Path, Path]:
-    """Итоговые Test-метрики и уверенность модели на триггерах против фона."""
+) -> go.Figure:
+    """Собирает Plotly-фигуру Test-метрик и уверенности модели на триггерах против фона."""
     ds_names = list(runs_by_dataset.keys())
     overall_ce = [runs_by_dataset[d]["test_metrics"]["cross_entropy"] for d in ds_names]
     targeted_ce = [runs_by_dataset[d]["test_metrics"]["targeted_ce"] or 0.0 for d in ds_names]
@@ -112,6 +111,16 @@ def plot_exp1_test_xray(
     )
     fig.update_yaxes(title_text="Cross-Entropy (наты)", range=[0, 2.7], row=1, col=1)
     fig.update_yaxes(title_text="Уверенность P (%)", range=[0, 112], row=1, col=2)
+    return fig
+
+
+def plot_exp1_test_xray(
+    arch: str,
+    runs_by_dataset: dict[str, dict[str, Any]],
+    summary_dir: Path,
+) -> tuple[Path, Path | None]:
+    """Итоговые Test-метрики и уверенность модели на триггерах против фона."""
+    fig = build_exp1_test_xray(arch, runs_by_dataset)
     return save_plotly_figure(fig, summary_dir, f"exp1_{arch}_test_xray")
 
 

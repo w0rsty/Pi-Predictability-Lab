@@ -16,8 +16,8 @@ dependencies = [
     "torch>=2.4.0",
     "lightgbm>=4.3.0",
     "scikit-learn>=1.4.0",
-    "plotly>=5.20.0",
-    "kaleido>=0.2.1,<1.0.0",  # 1.x требует системного Chrome/Chromium для экспортa PNG
+    "plotly>=6.0.0",
+    "kaleido>=1.0.0",
     "pyyaml>=6.0.1",
     "tqdm>=4.66.0",
 ]
