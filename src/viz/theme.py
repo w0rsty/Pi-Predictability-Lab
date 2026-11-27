@@ -1,4 +1,4 @@
-# Единая тема оформления, палитры и экспорт графиков (Plotly + PyEcharts)
+# Оформление графиков, цветовые палитры и сохранение Plotly в HTML и PNG
 from pathlib import Path
 from typing import Any
 

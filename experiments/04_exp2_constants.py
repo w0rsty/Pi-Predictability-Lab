@@ -1,10 +1,9 @@
-# Эксперимент 2: сравнение 9 последовательностей (константы, ГПСЧ, 1/999983, Чемперноун, цепные дроби e и pi)
+# Скрипт Exp 2: сравнение 9 последовательностей (константы, ГПСЧ, 1/999983, Чемперноун, цепные дроби e и pi)
 import argparse
 import json
 import math
 import re
 import shutil
-import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,7 @@ from sklearn.decomposition import PCA
 
 from src.baselines import evaluate_uniform_baseline, fit_and_evaluate_lightgbm, fit_and_evaluate_markov, fit_and_evaluate_ppm
 from src.data_generator import get_or_create_dataset, load_config, seed_everything
-from src.dataset import ChronologicalSplit, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
+from src.dataset import ChronologicalSplit, split_sequence_chronologically, verify_zero_leakage
 from src.evaluator import compute_mcnemar_exact, wilson_ci
 from src.exp_utils import (
     CANONICAL_TO_ARCH,
@@ -25,18 +24,18 @@ from src.exp_utils import (
     eval_markov_preds_and_speed,
     eval_ppm_preds_and_speed,
     find_latest_csv,
+    predict_and_benchmark,
     read_sec_per_epoch,
     resolve_run_dir,
 )
-from src.models import build_model, count_parameters
+from src.models import build_model
 from src.stats_tests import run_full_statistical_suite
 from src.trainer import create_run_dir, remap_legacy_state_dict, resolve_device, train_model
-from src.visualizer import (
+from src.viz import (
     plot_exp2_cf_and_champernowne_contrast,
     plot_exp2_constants_comparison,
     plot_exp2_embedding_pca_preview,
     plot_exp2_heatmap_bits,
-    plot_exp2_radar_pyecharts,
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -96,6 +95,8 @@ def _load_baselines_and_exp1_cache(runs_root: Path, cached: dict[tuple[str, str]
 def load_cached_results(runs_root: Path) -> dict[tuple[str, str], dict[str, Any]]:
     cached: dict[tuple[str, str], dict[str, Any]] = {}
     _load_baselines_and_exp1_cache(runs_root, cached)
+    if not runs_root.exists():
+        return cached
     for d in sorted([p for p in runs_root.iterdir() if p.is_dir() and p.name.startswith("exp2_constants_")], key=lambda p: p.name):
         if not (d / "metrics.csv").exists():
             continue
@@ -139,78 +140,6 @@ def load_cached_results(runs_root: Path) -> dict[tuple[str, str], dict[str, Any]
                     }
                     break
     return cached
-
-
-@torch.no_grad()
-def _benchmark_and_predict_neural(
-    arch: str, run_dir: Path, split: ChronologicalSplit, radix: int, window_size: int, size_tier: str, batch_size: int, num_workers: int, device: torch.device,
-) -> tuple[np.ndarray, float, dict[str, Any]]:
-    ckpt_path = run_dir / "best_model.pt"
-    loaders = create_dataloaders(split=split, window_size=window_size, batch_size=batch_size, num_workers=num_workers, pin_memory=(device.type == "cuda"))
-    model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier=size_tier)
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
-    sd, remapped = remap_legacy_state_dict(ckpt["model_state_dict"])
-    model.load_state_dict(sd)
-    model = model.to(device).eval()
-
-    amp_enabled = device.type == "cuda"
-    test_loader = loaders["test"]
-    for ctx, _, _ in test_loader:
-        with torch.amp.autocast("cuda", enabled=amp_enabled):
-            _ = model(ctx.to(device, non_blocking=True))
-        break
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-    t0, chunks = time.perf_counter(), []
-    for ctx, tgt, _ in test_loader:
-        with torch.amp.autocast("cuda", enabled=amp_enabled):
-            logits = model(ctx.to(device, non_blocking=True))
-        chunks.append((torch.argmax(logits.float(), dim=-1) == tgt.to(device, non_blocking=True)).cpu().numpy())
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    correct_bool = np.concatenate(chunks, axis=0)
-    sps = round(float(len(correct_bool) / max(time.perf_counter() - t0, 1e-5)), 1)
-
-    meta: dict[str, Any] = {
-        "arch": arch, "radix": int(radix), "window_size": int(window_size), "size_tier": size_tier,
-        "param_count": int(count_parameters(model)), "best_epoch": int(ckpt.get("epoch", 0)),
-        "val_loss": float(ckpt.get("val_loss", float("nan"))), "ckpt_path": ckpt_path, "was_remapped_legacy": remapped,
-    }
-    if arch == "transformer":
-        meta.update({"d_model": int(model.d_model), "n_heads": int(model.n_heads), "n_layers": int(model.n_layers), "token_emb": model.token_emb.weight.detach().cpu().numpy().copy()})
-    elif arch == "gru":
-        meta.update({"hidden_size": int(model.hidden_size), "num_layers": int(model.num_layers), "emb_dim": int(model.emb_dim)})
-    elif arch == "mlp":
-        meta.update({"emb_dim": int(model.emb_dim)})
-    elif arch == "cnn":
-        meta.update({"channels": int(model.channels), "head_hidden": int(model.head_hidden)})
-    return correct_bool, sps, meta
-
-
-def _compute_radar_scores(df_final: pd.DataFrame) -> dict[str, dict[str, float]]:
-    families = ["PPM_o8", "DigitMLP", "DigitCNN", "DigitGRU", "DigitTransformer"]
-    shannon_10 = math.log2(10.0)
-    piv_bits = df_final.pivot(index="dataset", columns="model", values="bits_per_symbol")
-    piv_speed = df_final.pivot(index="dataset", columns="model", values="samples_per_sec")
-    med_speeds = {m: float(piv_speed[m].dropna().astype(float).median()) if m in piv_speed.columns and not piv_speed[m].dropna().empty else 0.0 for m in families}
-    max_speed = max(max(med_speeds.values()), 1.0)
-
-    scores: dict[str, dict[str, float]] = {}
-    for m in families:
-        if m not in piv_bits.columns:
-            continue
-        col = piv_bits[m]
-        mean_h0 = float(col.reindex(H0_DECIMAL_DATASETS).mean())
-        scores[m] = {
-            "noise_calibration": round(100.0 * math.exp(-10.0 * abs(mean_h0 - shannon_10)), 2),
-            "periodic_memory": round(max(0.0, min(100.0, 100.0 * (1.0 - float(col["rational_1_999983"]) / shannon_10))), 2),
-            "multi_digit_counting": round(max(0.0, min(100.0, 100.0 * (1.0 - float(col["champernowne"]) / shannon_10))), 2),
-            "cf_arithmetic": round(max(0.0, min(100.0, 100.0 * (1.0 - float(col["e_cf"]) / max(float(col["pi_cf"]), 1e-9)))), 2),
-            "throughput": round(100.0 * math.sqrt(med_speeds[m] / max_speed), 2),
-            "median_samples_per_sec": round(med_speeds[m], 1),
-        }
-    return scores
 
 
 def load_datasets(config: dict[str, Any], window_size: int) -> tuple[dict, dict, list[dict], list[dict]]:
@@ -269,7 +198,7 @@ def train_missing_models(
                 continue
             seed_everything(seed)
             art, split = artifacts[ds_name], splits[ds_name]
-            loaders = create_dataloaders(split=split, window_size=window_size, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
+            loaders = create_dataloaders(split=split, window_size=window_size, batch_size=batch_size, num_workers=num_workers, pin_memory=True, seed=seed)
             model = build_model(arch=arch, radix=art.radix, window_size=window_size, size_tier=size_tier)
             res = train_model(model, loaders, config, f"exp2_{arch}_{ds_name}", art.radix, epochs=max_epochs, early_stopping_patience=patience, enable_early_stopping=True)
             s, tm, hist = res["summary"], res["test_metrics"], res["history"]
@@ -303,7 +232,7 @@ def finalize_exp2(
         if (ds_name, "PPM_o8") in records:
             records[(ds_name, "PPM_o8")]["samples_per_sec"] = ppm_sps
         if (ds_name, "Uniform") in records and not records[(ds_name, "Uniform")].get("samples_per_sec"):
-            records[(ds_name, "Uniform")]["samples_per_sec"] = round((len(split.test_digits) - window_size) / 0.001, 1)
+            records[(ds_name, "Uniform")]["samples_per_sec"] = None
 
         for m_name, arch in CANONICAL_TO_ARCH.items():
             rec = records.get((ds_name, m_name))
@@ -311,7 +240,9 @@ def finalize_exp2(
             if rec is None or run_dir is None:
                 continue
             rec["sec_per_epoch"] = read_sec_per_epoch(run_dir, rec.get("train_time_sec"), rec.get("epochs_ran"))
-            corr, sps, meta = _benchmark_and_predict_neural(arch, run_dir, split, art.radix, window_size, size_tier, batch_size, num_workers, device)
+            corr, sps, meta = predict_and_benchmark(
+                arch, run_dir, split, art.radix, window_size, size_tier, batch_size, num_workers, device, seed=seed, collect_meta=True
+            )
             preds_cache[(ds_name, m_name)], rec["samples_per_sec"] = corr, sps
             meta["source_run_dir"] = str(run_dir)
             neural_meta[(ds_name, m_name)] = meta
@@ -332,7 +263,8 @@ def finalize_exp2(
     for m_name, ds_list in EXP5_CHECKPOINT_TARGETS.items():
         arch = CANONICAL_TO_ARCH[m_name]
         for ds_name in ds_list:
-            if (meta := neural_meta.get((ds_name, m_name))) is None:
+            meta = neural_meta.get((ds_name, m_name))
+            if meta is None:
                 continue
             dst = ckpt_dir / f"{arch}_{ds_name}.pt"
             if meta.get("was_remapped_legacy"):
@@ -388,15 +320,13 @@ def save_audit_and_plots(
             stat_audit[ds_name] = {"hypothesis_group": "H0" if ds_name in H0_GROUP else "H1", "best_neural_model": best_n["model"], "best_neural_bits": best_n["bits_per_symbol"], "best_neural_acc": best_n["test_acc"], "comparisons": comps}
         (summary_dir / "stat_audit.json").write_text(json.dumps(stat_audit, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    radar_scores = _compute_radar_scores(df_final) if finalize else {}
     (summary_dir / "plot_data.json").write_text(
-        json.dumps({"metrics": final_rows, "classical_stats_new_constants": new_stats_full, "radar_scores": radar_scores, "embedding_pca_preview": pca_data, "datasets": EXP2_DATASETS}, ensure_ascii=False, indent=2),
+        json.dumps({"metrics": final_rows, "classical_stats_new_constants": new_stats_full, "embedding_pca_preview": pca_data, "datasets": EXP2_DATASETS}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     if finalize:
         plot_exp2_heatmap_bits(df_final, summary_dir, datasets=EXP2_DATASETS, models=["PPM_o8", "LightGBM", "DigitMLP", "DigitCNN", "DigitGRU", "DigitTransformer"])
         plot_exp2_cf_and_champernowne_contrast(df_final, summary_dir)
-        plot_exp2_radar_pyecharts(radar_scores, summary_dir)
         plot_exp2_embedding_pca_preview(pca_data, summary_dir)
     else:
         models_for_plot = [m for m in ("PPM_o8", "LightGBM", "DigitMLP", "DigitCNN", "DigitGRU", "DigitTransformer") if m in df_final["model"].unique()]
@@ -433,7 +363,7 @@ def run_experiment_2(archs: list[str], size_tier: str = "medium", max_epochs: in
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Эксперимент 2: Битва констант, ГПСЧ и цепных дробей")
+    parser = argparse.ArgumentParser(description="Эксперимент 2: Сравнение констант, ГПСЧ и цепных дробей")
     parser.add_argument("--arch", type=str, default="transformer", help="Архитектура: mlp, cnn, gru, transformer, all, или baselines_only")
     parser.add_argument("--size", type=str, default="medium", choices=["light", "medium", "heavy"])
     parser.add_argument("--max-epochs", type=int, default=10)

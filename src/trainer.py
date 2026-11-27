@@ -1,4 +1,4 @@
-# GPU-тренер с CUDA AMP, прогресс-баром, EarlyStopping и снимком конфига в runs/
+# Цикл обучения на GPU/CPU с CUDA AMP, прогресс-баром, EarlyStopping и снимком конфига
 import json
 import time
 from datetime import datetime
@@ -13,6 +13,7 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from src.data_generator import make_dataloader_generator, seed_worker
 from src.evaluator import evaluate_model
 from src.models import count_parameters
 
@@ -137,6 +138,25 @@ def _save_run_outputs(
     return summary
 
 
+def _build_adamw_param_groups(model: nn.Module, weight_decay: float) -> list[dict[str, Any]]:
+    """Делит обучаемые параметры на decay (ndim >= 2) и no_decay (bias, LayerNorm, BatchNorm)."""
+    decay_params: list[torch.Tensor] = []
+    no_decay_params: list[torch.Tensor] = []
+    for p in model.parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim >= 2:
+            decay_params.append(p)
+        else:
+            no_decay_params.append(p)
+    groups: list[dict[str, Any]] = []
+    if decay_params:
+        groups.append({"params": decay_params, "weight_decay": float(weight_decay)})
+    if no_decay_params:
+        groups.append({"params": no_decay_params, "weight_decay": 0.0})
+    return groups
+
+
 def train_model(
     model: nn.Module,
     loaders: dict[str, DataLoader],
@@ -150,6 +170,7 @@ def train_model(
     amp_dtype: str = "float16",
     early_stopping_patience: int | None = None,
     enable_early_stopping: bool = True,
+    restore_best_val: bool | None = None,
     run_dir: Path | None = None,
     show_progress: bool = True,
     epoch_cb: EpochCallback | None = None,
@@ -162,6 +183,7 @@ def train_model(
     use_bf16 = amp_dtype == "bfloat16" and device.type == "cuda" and torch.cuda.is_bf16_supported()
     autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
     use_scaler = use_amp and not use_bf16
+    should_restore = enable_early_stopping if restore_best_val is None else bool(restore_best_val)
 
     num_epochs = int(epochs if epochs is not None else train_cfg.get("epochs", 30))
     lr = float(learning_rate if learning_rate is not None else train_cfg.get("learning_rate", 1e-3))
@@ -174,7 +196,8 @@ def train_model(
 
     model = model.to(device)
     param_count = count_parameters(model)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    param_groups = _build_adamw_param_groups(model, weight_decay=weight_decay)
+    optimizer = torch.optim.AdamW(param_groups, lr=lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(num_epochs, 1), eta_min=lr * 0.05) if scheduler_type == "cosine" else None
     scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
@@ -189,7 +212,7 @@ def train_model(
         tr_loss, tr_acc, tr_ent = _train_one_epoch(
             model, loaders["train"], optimizer, scaler, device, autocast_dtype, use_amp, use_scaler, epoch, num_epochs, show_progress, debug_grad_norm
         )
-        val_metrics = evaluate_model(model=model, loader=loaders["val"], device=device, radix=radix, use_amp=use_amp)
+        val_metrics = evaluate_model(model=model, loader=loaders["val"], device=device, radix=radix, use_amp=use_amp, amp_dtype=amp_dtype)
         val_loss = val_metrics["cross_entropy"]
         row = {
             "epoch": epoch,
@@ -222,10 +245,10 @@ def train_model(
         if enable_early_stopping and no_improve >= patience:
             break
 
-    if best_ckpt_path.exists():
+    if should_restore and best_ckpt_path.exists():
         ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["model_state_dict"])
-    test_metrics = evaluate_model(model=model, loader=loaders["test"], device=device, radix=radix, use_amp=use_amp, collect_transitions=(radix == 10))
+    test_metrics = evaluate_model(model=model, loader=loaders["test"], device=device, radix=radix, use_amp=use_amp, amp_dtype=amp_dtype, collect_transitions=(radix == 10))
     summary = _save_run_outputs(
         run_dir, exp_name, device, use_amp, param_count, best_epoch, best_val_loss,
         bool(enable_early_stopping and no_improve >= patience), time.perf_counter() - train_start, history, test_metrics, best_ckpt_path,

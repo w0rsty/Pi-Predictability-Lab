@@ -1,5 +1,4 @@
-# Графики Exp 2 (константы, радар, PCA) и Exp 3 (системы счисления BBP)
-import subprocess
+# Построение Plotly-графиков для Экспериментов 2 и 3
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +48,7 @@ def plot_exp2_constants_comparison(
     fig.add_hline(y=3.321928, line_dash="dash", line_color="white", opacity=0.55, row=1, col=1)
     fig.add_hline(y=3.459432, line_dash="dot", line_color="#FFA15A", opacity=0.55, row=1, col=1)
     fig.add_hline(y=0.0, line_dash="dash", line_color="white", opacity=0.55, row=1, col=2)
-    apply_lab_layout(fig, f"Эксперимент 2 ({title_suffix}): Битва констант, ГПСЧ и цепных дробей (L=64)", height=580, width=1640, barmode="group")
+    apply_lab_layout(fig, f"Эксперимент 2 ({title_suffix}): Сравнение констант, ГПСЧ и цепных дробей (L=64)", height=580, width=1640, barmode="group")
     fig.update_yaxes(title_text="Бит на символ", range=[0, 4.35], row=1, col=1)
     fig.update_yaxes(title_text="Выигрыш над Марковым (бит)", row=1, col=2)
     return save_plotly_figure(fig, summary_dir, "exp2_constants_bits_comparison")
@@ -167,67 +166,6 @@ def plot_exp2_cf_and_champernowne_contrast(df: pd.DataFrame, summary_dir: Path) 
     fig.update_yaxes(title_text="Test Accuracy (%)", range=[0, 115], row=1, col=1)
     fig.update_yaxes(title_text="bits / log₂(K)", range=[0, 1.24], row=2, col=1)
     return save_plotly_figure(fig, summary_dir, "exp2_cf_and_champernowne_contrast")
-
-
-def _render_radar_png(html_path: Path, png_path: Path) -> None:
-    html_text = html_path.read_text(encoding="utf-8").replace(
-        "<body >", "<body style='margin:0; padding:0; background:#111111; overflow:hidden;'>"
-    )
-    html_path.write_text(html_text, encoding="utf-8")
-    subprocess.run(
-        [
-            "chromium", "--headless", "--no-sandbox", "--disable-gpu",
-            "--virtual-time-budget=4000", "--window-size=1160,800",
-            f"--screenshot={png_path}", f"file://{html_path.resolve()}",
-        ],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-
-def plot_exp2_radar_pyecharts(radar_scores: dict[str, dict[str, float]], summary_dir: Path) -> tuple[Path, Path]:
-    """5-осевой радар эффективности семейств моделей на PyEcharts."""
-    from pyecharts import options as opts
-    from pyecharts.charts import Radar
-    from pyecharts.globals import ThemeType
-
-    summary_dir.mkdir(parents=True, exist_ok=True)
-    html_path, png_path = summary_dir / "exp2_radar_pyecharts.html", summary_dir / "exp2_radar_pyecharts.png"
-    indicators = [
-        opts.RadarIndicatorItem(name="Шумоустойчивость\n(H0 Calibration)", max_=100),
-        opts.RadarIndicatorItem(name="Период. память\n(1 / 999983)", max_=100),
-        opts.RadarIndicatorItem(name="Многоразрядный счёт\n(Champernowne)", max_=100),
-        opts.RadarIndicatorItem(name="Арифметика дробей\n(e_cf vs pi_cf)", max_=100),
-        opts.RadarIndicatorItem(name="Throughput на GPU\n(RTX 3060 Ti)", max_=100),
-    ]
-    radar = Radar(init_opts=opts.InitOpts(width="1160px", height="800px", theme=ThemeType.DARK, bg_color="#111111", animation_opts=opts.AnimationOpts(animation=False)))
-    radar.add_schema(
-        schema=indicators, shape="polygon", center=["50%", "54%"], radius="62%",
-        splitarea_opt=opts.SplitAreaOpts(is_show=True, areastyle_opts=opts.AreaStyleOpts(opacity=0.12)),
-        textstyle_opts=opts.TextStyleOpts(color="#E2E8F0", font_size=13),
-    )
-    axis_keys = ("noise_calibration", "periodic_memory", "multi_digit_counting", "cf_arithmetic", "throughput")
-    for m_name in ("PPM_o8", "DigitMLP", "DigitCNN", "DigitGRU", "DigitTransformer"):
-        if m_name not in radar_scores:
-            continue
-        vec = [round(float(radar_scores[m_name][k]), 2) for k in axis_keys]
-        radar.add(
-            series_name=m_name, data=[vec], color=MODEL_COLORS.get(m_name, "#19D3F3"),
-            areastyle_opts=opts.AreaStyleOpts(opacity=0.12), linestyle_opts=opts.LineStyleOpts(width=3),
-            label_opts=opts.LabelOpts(is_show=False),
-        )
-    radar.set_global_opts(
-        title_opts=opts.TitleOpts(
-            title="Эксперимент 2: 5-осевой радар эффективности семейств моделей (шкала 0–100)",
-            subtitle="Сравнение табличной памяти PPM_o8 и 4 нейроархитектур (~250K параметров, L=64)",
-            pos_left="center", pos_top="14px",
-            title_textstyle_opts=opts.TextStyleOpts(color="#F8FAFC", font_size=20),
-            subtitle_textstyle_opts=opts.TextStyleOpts(color="#94A3B8", font_size=13),
-        ),
-        legend_opts=opts.LegendOpts(pos_bottom="14px", pos_left="center", textstyle_opts=opts.TextStyleOpts(color="#F8FAFC", font_size=14)),
-    )
-    radar.render(str(html_path))
-    _render_radar_png(html_path, png_path)
-    return html_path, png_path
 
 
 def plot_exp2_embedding_pca_preview(pca_data: dict[str, dict[str, Any]], summary_dir: Path) -> tuple[Path, Path]:

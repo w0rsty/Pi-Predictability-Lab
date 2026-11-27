@@ -1,4 +1,4 @@
-# Пакет визуализации экспериментов проекта
+# Реэкспорт всех визуализаторов экспериментов проекта
 from src.viz.classical_and_exp1 import (
     plot_arch_battle_comparison,
     plot_attention_maps,
@@ -12,7 +12,6 @@ from src.viz.exp2_and_exp3 import (
     plot_exp2_constants_comparison,
     plot_exp2_embedding_pca_preview,
     plot_exp2_heatmap_bits,
-    plot_exp2_radar_pyecharts,
     plot_exp3_bases_normalized_bits,
     plot_exp3_bases_zscore_ci,
 )
@@ -43,7 +42,6 @@ __all__ = [
     "plot_exp2_constants_comparison",
     "plot_exp2_heatmap_bits",
     "plot_exp2_cf_and_champernowne_contrast",
-    "plot_exp2_radar_pyecharts",
     "plot_exp2_embedding_pca_preview",
     "plot_exp3_bases_normalized_bits",
     "plot_exp3_bases_zscore_ci",

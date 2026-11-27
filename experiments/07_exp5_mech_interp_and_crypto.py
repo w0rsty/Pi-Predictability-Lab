@@ -1,10 +1,10 @@
-# Эксперимент 5: мехинтерп (PCA эмбеддингов, Head Ablation, Linear Probing), крипто-аудитор ГПСЧ и BBP-оракул
+# Скрипт Exp 5: анализ эмбеддингов, абляция голов, probing, крипто-детектор и BBP-тест
 import argparse
-import gc
 import json
 import math
 import shutil
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -14,34 +14,38 @@ import torch
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import balanced_accuracy_score, f1_score
+from sklearn.metrics import average_precision_score, balanced_accuracy_score, f1_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.baselines import evaluate_uniform_baseline, fit_and_evaluate_ppm
-from src.data_generator import get_or_create_dataset, load_config, seed_everything
+from src.data_generator import get_or_create_dataset, load_config, make_dataloader_generator, seed_everything, seed_worker
 from src.dataset import BinaryCoordinateDataset, SequenceWindowDataset, _fast_batch_collate, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
-from src.evaluator import compute_bitrate_metrics, evaluate_model, mcnemar_test, wilson_ci
+from src.evaluator import compute_binomial_z_score, compute_bitrate_metrics, evaluate_model, holm_bonferroni_correction, mcnemar_test, wilson_ci
+from src.exp_utils import free_gpu
 from src.models import DigitGRU, DigitTransformer, build_model, count_parameters
 from src.stats_tests import run_classical_tests
 from src.trainer import create_run_dir, remap_legacy_state_dict, resolve_device, train_model
-from src.visualizer import (
+from src.viz import (
     plot_exp5_crypto_backdoor_xray,
     plot_exp5_embedding_clock_pca,
     plot_exp5_head_ablation_heatmap,
     plot_exp5_linear_probing_bars,
 )
 
+ROOT_DIR = Path(__file__).resolve().parents[1]
 
-def _free_gpu() -> None:
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+
+def _resolve_runs_root(config: dict[str, Any]) -> Path:
+    raw = Path(config["paths"]["runs_dir"])
+    return raw if raw.is_absolute() else ROOT_DIR / raw
 
 
 def _find_latest_dir(runs_root: Path, prefix: str) -> Path | None:
+    if not runs_root.exists():
+        return None
     cands = sorted([p for p in runs_root.iterdir() if p.is_dir() and p.name.startswith(prefix)], key=lambda p: p.name, reverse=True)
     return cands[0] if cands else None
 
@@ -49,7 +53,7 @@ def _find_latest_dir(runs_root: Path, prefix: str) -> Path | None:
 def _load_checkpoint_model(arch: str, ckpt_path: Path, radix: int, window_size: int, size_tier: str, device: torch.device) -> torch.nn.Module:
     model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier=size_tier)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
-    sd = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ck
+    sd = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
     remapped, _ = remap_legacy_state_dict(sd)
     model.load_state_dict(remapped)
     return model.to(device).eval()
@@ -113,11 +117,37 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom) if denom >= 1e-12 else 0.0
 
 
+def _embedding_adj_perm_test(emb_d: np.ndarray, n_perms: int = 10_000, seed: int = 42) -> tuple[float, float]:
+    """Перестановочный тест разности (mean_adj_cos - mean_nonadj_cos) по меткам 0..9."""
+    norms = np.linalg.norm(emb_d, axis=1, keepdims=True)
+    unit = emb_d / np.maximum(norms, 1e-12)
+    cos_mat = unit @ unit.T
+    adj_pairs = [(d, (d + 1) % 10) for d in range(10)]
+    nonadj_pairs = [(i, j) for i in range(10) for j in range(i + 1, 10) if (j - i) not in (1, 9)]
+    adj_arr = np.array(adj_pairs, dtype=np.int64)
+    nonadj_arr = np.array(nonadj_pairs, dtype=np.int64)
+
+    obs_adj = float(cos_mat[adj_arr[:, 0], adj_arr[:, 1]].mean())
+    obs_non = float(cos_mat[nonadj_arr[:, 0], nonadj_arr[:, 1]].mean())
+    obs_diff = obs_adj - obs_non
+
+    rng = np.random.default_rng(seed)
+    ge_count = 0
+    for _ in range(n_perms):
+        perm = rng.permutation(10)
+        p_adj = perm[adj_arr]
+        p_non = perm[nonadj_arr]
+        diff = float(cos_mat[p_adj[:, 0], p_adj[:, 1]].mean() - cos_mat[p_non[:, 0], p_non[:, 1]].mean())
+        if diff >= obs_diff:
+            ge_count += 1
+    return obs_diff, float((1 + ge_count) / (n_perms + 1))
+
+
 def _analyze_embeddings(checkpoints: dict[str, dict[str, Any]], seed: int = 42) -> dict[str, Any]:
     results, init_cache = {}, {}
     for name, info in checkpoints.items():
         ckpt = torch.load(info["path"], map_location="cpu", weights_only=True)
-        sd = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ck
+        sd = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
         emb = sd["token_emb.weight"].float().numpy()
         emb_d, vocab_sz, d_model = emb[:10], int(emb.shape[0]), int(emb.shape[1])
         tier = "heavy" if d_model >= 192 else "medium"
@@ -132,6 +162,7 @@ def _analyze_embeddings(checkpoints: dict[str, dict[str, Any]], seed: int = 42) 
         adj_0_8 = [_cosine(emb_d[d], emb_d[d + 1]) for d in range(9)]
         cos_9_0 = _cosine(emb_d[9], emb_d[0])
         non_adj = [_cosine(emb_d[i], emb_d[j]) for i in range(10) for j in range(i + 1, 10) if (j - i) not in (1, 9)]
+        adj_diff, adj_perm_p = _embedding_adj_perm_test(emb_d, n_perms=10_000, seed=seed)
 
         pc2d = coords_3d[:, :2]
         centered = pc2d - pc2d.mean(axis=0, keepdims=True)
@@ -151,6 +182,8 @@ def _analyze_embeddings(checkpoints: dict[str, dict[str, Any]], seed: int = 42) 
             "cosine_9_to_0": round(float(cos_9_0), 6),
             "adjacent_cosine_mod10_mean": round(float(np.mean(adj_0_8 + [cos_9_0])), 6),
             "nonadjacent_cosine_mean": round(float(np.mean(non_adj)), 6),
+            "adj_minus_nonadj_cos": round(adj_diff, 6),
+            "adj_perm_p_value": round(adj_perm_p, 6),
             "cyclic_order_consistency_10": round(max(int(np.sum(step_d > 0)), int(np.sum(step_d < 0))) / 10.0, 4),
             "arc_order_consistency_9": round(max(int(np.sum(arc_d > 0)), int(np.sum(arc_d < 0))) / 9.0, 4),
             "angles_rad": [round(float(a), 4) for a in angles],
@@ -173,8 +206,9 @@ def _eval_preds_and_nll(model: DigitTransformer, loader: DataLoader, device: tor
     return np.concatenate(corr_chunks), np.concatenate(nll_chunks)
 
 
-def _classify_head_role(ds_name: str, sub_name: str, mc_sig: bool, delta_acc_pp: float, delta_bits: float) -> str:
-    if ds_name == "true_pi" or not mc_sig:
+def _classify_head_role(ds_name: str, sub_name: str, sig_holm: bool, delta_acc_pp: float, delta_bits: float) -> str:
+    # Негативный контроль проходит тот же статистический фильтр без исключений по имени датасета
+    if not sig_holm:
         return "redundant"
     if delta_acc_pp <= -1.0 or delta_bits >= 0.05:
         if sub_name in ("carry_over", "carry_digit"):
@@ -219,11 +253,19 @@ def _ablate_dataset_heads(ds_name: str, radix: int, win_size: int, size_tier: st
                 "dataset": ds_name, "window_size": win_size, "subset": sub_name, "n_subset": int(np.sum(sub_mask)),
                 "layer": int(l_idx), "head": int(h_idx), "base_acc": round(b_acc, 6), "ablated_acc": round(a_acc, 6),
                 "delta_acc_pp": round(d_acc, 4), "base_bits": round(b_bits, 6), "ablated_bits": round(a_bits, 6),
-                "delta_bits": round(d_bits, 6), "mcnemar_p": mc["p_value_str"], "mcnemar_sig_0_05": mc["significant_0_05"],
-                "head_role": _classify_head_role(ds_name, sub_name, mc["significant_0_05"], d_acc, d_bits),
+                "delta_bits": round(d_bits, 6), "mcnemar_p": mc["p_value_str"], "mcnemar_p_raw": float(mc["p_value"]),
+                "mcnemar_sig_0_05": mc["significant_0_05"], "mcnemar_p_holm": float(mc["p_value"]),
+                "mcnemar_sig_holm": bool(mc["significant_0_05"]), "head_role": "redundant",
             })
+
+    p_adj, sig_flags = holm_bonferroni_correction([r["mcnemar_p_raw"] for r in rows], alpha=0.05)
+    for row, pa, sig in zip(rows, p_adj, sig_flags):
+        row["mcnemar_p_holm"] = round(pa, 8) if pa >= 1e-8 else pa
+        row["mcnemar_sig_holm"] = bool(sig)
+        row["head_role"] = _classify_head_role(ds_name, str(row["subset"]), bool(sig), float(row["delta_acc_pp"]), float(row["delta_bits"]))
+
     del model
-    _free_gpu()
+    free_gpu()
     return rows
 
 
@@ -231,6 +273,12 @@ def _run_causal_head_ablation(config: dict[str, Any], checkpoints: dict[str, dic
     rows: list[dict[str, Any]] = []
     for ds_name, radix, win_size, size_tier, req_len in (("champernowne", 10, 64, "medium", None), ("e_cf", 11, 64, "medium", None), ("rational_1_97", 10, 128, "medium", 1_000_050), ("true_pi", 10, 64, "medium", None)):
         rows.extend(_ablate_dataset_heads(ds_name, radix, win_size, size_tier, req_len, checkpoints[ds_name]["path"], config, device))
+    # Глобальная поправка Холма — Бонферрони по всей матрице абляции (все датасеты и срезы)
+    p_adj, sig_flags = holm_bonferroni_correction([r["mcnemar_p_raw"] for r in rows], alpha=0.05)
+    for row, pa, sig in zip(rows, p_adj, sig_flags):
+        row["mcnemar_p_holm"] = round(pa, 8) if pa >= 1e-8 else pa
+        row["mcnemar_sig_holm"] = bool(sig)
+        row["head_role"] = _classify_head_role(str(row["dataset"]), str(row["subset"]), bool(sig), float(row["delta_acc_pp"]), float(row["delta_bits"]))
     return pd.DataFrame(rows)
 
 
@@ -269,7 +317,16 @@ def _run_linear_probing(config: dict[str, Any], checkpoints: dict[str, dict[str,
         for spec in probe_specs:
             ds_name, win_size, y = spec["dataset"], spec["window_size"], spec["labels"]
             tr_end = int(0.8 * n_probe_windows)
-            y_tr, y_te, probe_preds = y[:tr_end], y[tr_end:], {}
+            te_start = tr_end + win_size
+            # Зазор в win_size позиций гарантирует, что ни один токен последнего train-окна не попадёт в test-окно
+            max_tr_token_pos = (tr_end - 1) + (win_size - 1)
+            min_te_token_pos = te_start
+            assert max_tr_token_pos < min_te_token_pos, f"Утечка окон probing: {max_tr_token_pos} >= {min_te_token_pos}"
+
+            y_tr, y_te = y[:tr_end], y[te_start:]
+            maj_counts = np.bincount(y_te)
+            majority_baseline = float(maj_counts.max() / max(len(y_te), 1))
+            probe_preds = {}
             for state_name in ("Trained", "Untrained"):
                 ck_key = (arch_key, ds_name, state_name)
                 if ck_key not in features_cache:
@@ -280,19 +337,37 @@ def _run_linear_probing(config: dict[str, Any], checkpoints: dict[str, dict[str,
                         m = build_model(arch=arch_key, radix=spec["radix"], window_size=win_size, size_tier="medium").to(device).eval()
                     features_cache[ck_key] = _extract_hidden_slice(m, spec["split"].test_digits, win_size, n_probe_windows, device)
                     del m
-                    _free_gpu()
+                    free_gpu()
                 xf = features_cache[ck_key]
-                pipe = make_pipeline(StandardScaler(), LogisticRegression(solver="lbfgs", max_iter=1000, C=1.0, random_state=42)).fit(xf[:tr_end], y_tr)
-                y_pred = pipe.predict(xf[tr_end:])
+                clf = LogisticRegression(solver="lbfgs", max_iter=1000, C=1.0, random_state=42)
+                pipe = make_pipeline(StandardScaler(), clf).fit(xf[:tr_end], y_tr)
+                if int(np.max(clf.n_iter_)) >= int(clf.max_iter):
+                    warnings.warn(
+                        f"Linear probing {arch_name}/{spec['task']} ({state_name}) достиг max_iter={clf.max_iter}",
+                        stacklevel=2,
+                    )
+                y_pred = pipe.predict(xf[te_start:])
                 probe_preds[state_name] = y_pred
                 ci_lo, ci_hi = wilson_ci(int(np.sum(y_pred == y_te)), len(y_te))
+                f1_pos: float | None = None
+                pr_auc: float | None = None
+                if spec["n_classes"] == 2:
+                    f1_pos = round(float(f1_score(y_te, y_pred, pos_label=1, zero_division=0)), 6)
+                    pos_idx = list(clf.classes_).index(1) if 1 in clf.classes_ else -1
+                    if pos_idx >= 0:
+                        pr_auc = round(float(average_precision_score(y_te, pipe.predict_proba(xf[te_start:])[:, pos_idx])), 6)
+
                 rows.append({
                     "model": arch_name, "task": spec["task"], "dataset": ds_name, "n_classes": spec["n_classes"],
                     "state": state_name, "n_train": len(y_tr), "n_test": len(y_te),
                     "probe_acc": round(float(np.mean(y_pred == y_te)), 6), "wilson_ci_low": ci_lo, "wilson_ci_high": ci_hi,
                     "balanced_acc": round(float(balanced_accuracy_score(y_te, y_pred)), 6),
                     "f1_macro": round(float(f1_score(y_te, y_pred, average="macro", zero_division=0)), 6),
-                    "chance_baseline": round(float(spec["chance"]), 6), "mcnemar_vs_untrained_p": "",
+                    "f1_pos": f1_pos,
+                    "pr_auc": pr_auc,
+                    "majority_baseline": round(majority_baseline, 6),
+                    "chance_baseline": round(float(spec["chance"]), 6),
+                    "mcnemar_vs_untrained_p": "",
                 })
             mc = mcnemar_test(probe_preds["Trained"] == y_te, probe_preds["Untrained"] == y_te)
             rows[-2]["mcnemar_vs_untrained_p"] = mc["p_value_str"]
@@ -300,11 +375,14 @@ def _run_linear_probing(config: dict[str, Any], checkpoints: dict[str, dict[str,
 
 
 def run_module1_mech_interp(config: dict[str, Any], summary_dir: Path, device: torch.device) -> dict[str, Any]:
-    runs_root = Path(config["paths"]["runs_dir"])
-    exp2_dir, exp4_dir = _find_latest_dir(runs_root, "exp2_constants_final_"), _find_latest_dir(runs_root, "exp4_scaling_")
+    runs_root = _resolve_runs_root(config)
+    exp2_dir = _find_latest_dir(runs_root, "exp2_constants_final_")
+    exp4_dir = _find_latest_dir(runs_root, "exp4_scaling_")
     exp4_gru = _find_latest_dir(runs_root, "exp4_block_b_phasetransition_h1_gru_rational_1_97_L128_medium_")
     if exp2_dir is None or exp4_dir is None or exp4_gru is None:
-        raise FileNotFoundError("Не найдены чекпойнты Exp2 или Exp4 для Модуля 1")
+        raise FileNotFoundError(
+            f"Для Модуля 1 не найдены директории Exp2/Exp4 в {runs_root}. Запустите Exp2 и Exp4 или запустите `--modules 2,3`."
+        )
     tr_ckpts = {
         "true_pi": {"path": exp2_dir / "checkpoints" / "transformer_true_pi.pt"},
         "e_cf": {"path": exp2_dir / "checkpoints" / "transformer_e_cf.pt"},
@@ -314,6 +392,9 @@ def run_module1_mech_interp(config: dict[str, Any], summary_dir: Path, device: t
         "memorization_10k_heavy": {"path": exp4_dir / "checkpoints" / "transformer_memorization_10k_heavy.pt"},
     }
     gru_ckpts = {"e_cf": {"path": exp2_dir / "checkpoints" / "gru_e_cf.pt"}, "champernowne": {"path": exp2_dir / "checkpoints" / "gru_champernowne.pt"}, "rational_1_97": {"path": exp4_gru / "best_model.pt"}}
+    missing = [str(v["path"]) for v in (*tr_ckpts.values(), *gru_ckpts.values()) if not Path(v["path"]).exists()]
+    if missing:
+        raise FileNotFoundError(f"Отсутствуют чекпойнты для Модуля 1: {missing}")
 
     emb_geo = _analyze_embeddings(tr_ckpts, seed=int(config.get("seed", 42)))
     (summary_dir / "embedding_geometry.json").write_text(json.dumps(emb_geo, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -376,7 +457,7 @@ def _collect_eval_preds_and_attn(model: torch.nn.Module, test_digits: np.ndarray
 
 
 def _load_or_train_submodel(arch: str, prefix: str, ds_name: str, radix: int, window_size: int, loaders: dict[str, DataLoader], config: dict[str, Any], device: torch.device, reuse_checkpoints: bool) -> tuple[torch.nn.Module, dict[str, Any]]:
-    runs_root = Path(config["paths"]["runs_dir"])
+    runs_root = _resolve_runs_root(config)
     existing = _find_latest_dir(runs_root, f"{prefix}_{arch}_{ds_name}_") if reuse_checkpoints else None
     if existing is not None and (existing / "best_model.pt").exists():
         best_m = _load_checkpoint_model(arch, existing / "best_model.pt", radix, window_size, "medium", device)
@@ -385,7 +466,7 @@ def _load_or_train_submodel(arch: str, prefix: str, ds_name: str, radix: int, wi
 
     seed_everything(int(config.get("seed", 42)))
     model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier="medium")
-    res = train_model(model, loaders, config, f"{prefix}_{arch}_{ds_name}", radix, epochs=10, learning_rate=1e-3, scheduler_type="cosine", early_stopping_patience=3, run_dir=create_run_dir(config["paths"]["runs_dir"], f"{prefix}_{arch}_{ds_name}"), show_progress=True)
+    res = train_model(model, loaders, config, f"{prefix}_{arch}_{ds_name}", radix, epochs=10, learning_rate=1e-3, scheduler_type="cosine", early_stopping_patience=3, run_dir=create_run_dir(runs_root, f"{prefix}_{arch}_{ds_name}"), show_progress=True)
     best_m = _load_checkpoint_model(arch, Path(res["summary"]["checkpoint_path"]), radix, window_size, "medium", device)
     del model
     return best_m, res
@@ -393,34 +474,45 @@ def _load_or_train_submodel(arch: str, prefix: str, ds_name: str, radix: int, wi
 
 def _format_backdoor_row(m_name: str, params_count: int | None, acc: float, ce: float, n_eval: int, n_mask: int, tgt_acc: float | None, tgt_ce: float | None, clean_acc: Any, source: str) -> dict[str, Any]:
     ci_lo, ci_hi = wilson_ci(int(round(acc * n_eval)), n_eval)
-    t_lo, t_hi = wilson_ci(int(round((tgt_acc or 0.0) * n_mask)), n_mask)
+    t_val = float(tgt_acc or 0.0)
+    t_lo, t_hi = wilson_ci(int(round(t_val * n_mask)), n_mask)
     br = compute_bitrate_metrics(ce, radix=10, correct=int(round(acc * n_eval)), total=n_eval)
+    tgt_z = compute_binomial_z_score(t_val, radix=10, n_samples=n_mask, ci_low=t_lo, ci_high=t_hi)
     return {
         "module": "Module2_CryptoBackdoor", "dataset": "csprng_backdoor", "radix": 10, "model": m_name, "params_count": params_count,
         "overall_acc": round(acc, 6), "wilson_ci_low": ci_lo, "wilson_ci_high": ci_hi,
-        "targeted_acc": round(float(tgt_acc), 6), "targeted_ci_low": t_lo, "targeted_ci_high": t_hi,
+        "targeted_acc": round(t_val, 6), "targeted_ci_low": t_lo, "targeted_ci_high": t_hi,
         "cross_entropy_nats": round(ce, 6), "targeted_ce_nats": round(float(tgt_ce), 6),
         "bits_per_symbol": round(br["bits_per_symbol"], 6), "shannon_limit_bits": round(br["shannon_limit_bits"], 6),
-        "z_score": br["z_score"], "z_p_value": br["z_p_value"], "num_eval_samples": n_eval, "num_masked_samples": n_mask,
+        "z_score": br["z_score"], "overall_z_score": br["z_score"], "z_p_value": br["z_p_value"],
+        "targeted_z_score": tgt_z["z_score"], "targeted_z_p_value": tgt_z["z_p_value"], "targeted_z_log10_p": tgt_z["z_log10_p"],
+        "num_eval_samples": n_eval, "num_masked_samples": n_mask,
         "clean_csprng_acc": clean_acc, "source": source,
     }
 
 
 def run_module2_crypto_auditor(config: dict[str, Any], summary_dir: Path, device: torch.device, reuse_checkpoints: bool = False) -> dict[str, Any]:
-    split_cfg, win_size = config["data"]["split"], 64
-    clean_art, bd_art = get_or_create_dataset("csprng", config=config), get_or_create_dataset("csprng_backdoor", config=config)
-    clean_stats, bd_stats = run_classical_tests("csprng", clean_art.digits, 10), run_classical_tests("csprng_backdoor", bd_art.digits, 10)
+    split_cfg = config["data"]["split"]
+    win_size = 64
+    seed = int(config.get("seed", 42))
+    clean_art = get_or_create_dataset("csprng", config=config)
+    bd_art = get_or_create_dataset("csprng_backdoor", config=config)
+    clean_stats = run_classical_tests("csprng", clean_art.digits, 10)
+    bd_stats = run_classical_tests("csprng_backdoor", bd_art.digits, 10)
     bd_split = split_sequence_chronologically(bd_art.digits, bd_art.mask, float(split_cfg["train"]), float(split_cfg["val"]), float(split_cfg["test"]))
     verify_zero_leakage(bd_split, window_size=win_size)
 
     uni_m = evaluate_uniform_baseline(bd_split, radix=10, window_size=win_size)
     ppm_m, ppm_probs = fit_and_evaluate_ppm(bd_split, radix=10, window_size=win_size, max_order=8)
-    test_targets, mask_bool = bd_split.test_digits[win_size:], bd_split.test_mask[win_size:] == 1
-    ppm_corr, uni_corr = np.argmax(ppm_probs, axis=1) == test_targets, test_targets == 0
+    test_targets = bd_split.test_digits[win_size:]
+    mask_bool = bd_split.test_mask[win_size:] == 1
+    ppm_corr = np.argmax(ppm_probs, axis=1) == test_targets
+    uni_corr = test_targets == 0
 
-    loaders = create_dataloaders(split=bd_split, window_size=win_size, batch_size=512, num_workers=int(config["training"].get("num_workers", 4)), pin_memory=(device.type == "cuda"))
+    loaders = create_dataloaders(split=bd_split, window_size=win_size, batch_size=512, num_workers=int(config["training"].get("num_workers", 4)), pin_memory=(device.type == "cuda"), seed=seed)
     neural_runs, neural_corr, attn_profile = {}, {}, None
-    (ckpt_dir := summary_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+    ckpt_dir = summary_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
     for arch, m_name in (("gru", "DigitGRU"), ("transformer", "DigitTransformer")):
         best_model, res = _load_or_train_submodel(arch, "exp5", "csprng_backdoor", 10, win_size, loaders, config, device, reuse_checkpoints)
         neural_runs[m_name] = res
@@ -429,10 +521,10 @@ def run_module2_crypto_auditor(config: dict[str, Any], summary_dir: Path, device
             attn_profile = attn_res
             shutil.copy2(res["summary"]["checkpoint_path"], ckpt_dir / "transformer_csprng_backdoor.pt")
         del best_model
-        _free_gpu()
+        free_gpu()
 
-    exp2_dir = _find_latest_dir(Path(config["paths"]["runs_dir"]), "exp2_constants_final_")
-    clean_csv = (exp2_dir / "metrics.csv") if exp2_dir and (exp2_dir / "metrics.csv").exists() else (Path("results/04_exp2_constants/metrics.csv"))
+    exp2_dir = _find_latest_dir(_resolve_runs_root(config), "exp2_constants_final_")
+    clean_csv = (exp2_dir / "metrics.csv") if exp2_dir and (exp2_dir / "metrics.csv").exists() else (ROOT_DIR / "results" / "04_exp2_constants" / "metrics.csv")
     clean_rows = {str(r["model"]): r.to_dict() for _, r in pd.read_csv(clean_csv).iterrows() if r["dataset"] == "csprng"} if clean_csv.exists() else {}
 
     m2_rows = [_format_backdoor_row(m_name, None, d["overall_acc"], d["cross_entropy"], int(d["num_eval_samples"]), int(d["num_masked_samples"]), d["targeted_acc"], d["targeted_ce"], clean_rows.get(m_name, {}).get("test_acc"), "exp5_module2") for m_name, d in (("Uniform", uni_m), ("PPM_o8", ppm_m))]
@@ -462,23 +554,39 @@ def _oracle_row(ds_name: str, radix: int, model_name: str, params_count: int | N
         "overall_acc": round(br["acc"], 6), "wilson_ci_low": br["wilson_ci_low"], "wilson_ci_high": br["wilson_ci_high"],
         "targeted_acc": None, "targeted_ci_low": None, "targeted_ci_high": None, "cross_entropy_nats": round(ce, 6),
         "targeted_ce_nats": None, "bits_per_symbol": round(br["bits_per_symbol"], 6), "shannon_limit_bits": round(br["shannon_limit_bits"], 6),
-        "z_score": br["z_score"], "z_p_value": br["z_p_value"], "num_eval_samples": n_test, "num_masked_samples": 0,
+        "z_score": br["z_score"], "overall_z_score": br["z_score"], "z_p_value": br["z_p_value"],
+        "targeted_z_score": None, "targeted_z_p_value": None, "targeted_z_log10_p": None,
+        "num_eval_samples": n_test, "num_masked_samples": 0,
         "clean_csprng_acc": None, "source": source,
     }
 
 
 def run_module3_bbp_oracle(config: dict[str, Any], device: torch.device, reuse_checkpoints: bool = False) -> dict[str, Any]:
-    split_cfg, num_bits = config["data"]["split"], 20
+    split_cfg = config["data"]["split"]
+    num_bits = 20
     num_workers = int(config["training"].get("num_workers", 4))
+    seed = int(config.get("seed", 42))
     rows, mc_results = [], {}
 
     for ds_name, radix in (("pi_base16", 16), ("true_pi", 10)):
         art = get_or_create_dataset(ds_name, config=config)
         n_total = len(art.digits)
-        tr_end, val_end = int(n_total * float(split_cfg["train"])), int(n_total * float(split_cfg["train"])) + int(n_total * float(split_cfg["val"]))
+        tr_end = int(n_total * float(split_cfg["train"]))
+        val_end = tr_end + int(n_total * float(split_cfg["val"]))
         idx_all = np.arange(n_total, dtype=np.int64)
+        worker_init = seed_worker if num_workers > 0 else None
         loaders = {
-            k: DataLoader(BinaryCoordinateDataset(idx_all[sl], art.digits[sl], num_bits=num_bits), batch_size=1024, shuffle=(k == "train"), num_workers=num_workers, pin_memory=(device.type == "cuda"), persistent_workers=(num_workers > 0), collate_fn=_fast_batch_collate)
+            k: DataLoader(
+                BinaryCoordinateDataset(idx_all[sl], art.digits[sl], num_bits=num_bits),
+                batch_size=1024,
+                shuffle=(k == "train"),
+                num_workers=num_workers,
+                pin_memory=(device.type == "cuda"),
+                persistent_workers=(num_workers > 0),
+                worker_init_fn=worker_init,
+                generator=make_dataloader_generator(seed) if k == "train" else None,
+                collate_fn=_fast_batch_collate,
+            )
             for k, sl in (("train", slice(0, tr_end)), ("val", slice(tr_end, val_end)), ("test", slice(val_end, None)))
         }
         uni_corr = art.digits[val_end:] == 0
@@ -498,16 +606,17 @@ def run_module3_bbp_oracle(config: dict[str, Any], device: torch.device, reuse_c
             tm, s = res["test_metrics"], res["summary"]
             rows.append(_oracle_row(ds_name, radix, m_name, s["param_count"], compute_bitrate_metrics(tm["cross_entropy"], radix, int(np.sum(model_corr)), n_test), tm["cross_entropy"], n_test, str(s["run_dir"])))
             del best_m
-            _free_gpu()
+            free_gpu()
     return {"rows": rows, "mcnemar": mc_results}
 
 
 def run_experiment_5(modules: list[int] | None = None, reuse_dir: Path | None = None, reuse_checkpoints: bool = False) -> Path:
     t_start = time.perf_counter()
-    config = load_config("configs/config.yaml")
+    config = load_config(ROOT_DIR / "configs" / "config.yaml")
     seed_everything(int(config.get("seed", 42)))
     device = resolve_device(str(config["training"].get("device", "cuda")))
-    summary_dir = reuse_dir if reuse_dir is not None else create_run_dir(config["paths"]["runs_dir"], "exp5_mech_interp")
+    runs_root = _resolve_runs_root(config)
+    summary_dir = reuse_dir if reuse_dir is not None else create_run_dir(runs_root, "exp5_mech_interp")
     summary_dir.mkdir(parents=True, exist_ok=True)
     active = set(modules or [1, 2, 3])
 

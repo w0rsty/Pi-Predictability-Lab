@@ -1,10 +1,11 @@
-# Генераторы последовательностей цифр (pi, константы, дроби, ГПСЧ, закладки) и кэш data/*.npy
+# Генерация и кэширование последовательностей цифр (pi, константы, дроби, ГПСЧ, синтетические закладки)
 import hashlib
 import json
 import math
 import os
 import random
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -39,12 +40,30 @@ def load_config(config_path: str | Path = "configs/config.yaml") -> dict[str, An
 
 
 def seed_everything(seed: int) -> None:
-    """Фиксирует сиды для random, numpy и torch ради воспроизводимости."""
+    """Фиксирует сиды генераторов и детерминизм cuDNN ради воспроизводимости."""
+    os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def make_dataloader_generator(seed: int) -> torch.Generator:
+    """Создаёт изолированный torch.Generator для воспроизводимого shuffle в DataLoader."""
+    gen = torch.Generator()
+    gen.manual_seed(int(seed))
+    return gen
+
+
+def seed_worker(worker_id: int) -> None:
+    """Синхронизирует сиды Python/NumPy внутри каждого воркера DataLoader."""
+    worker_seed = torch.initial_seed() % (2**32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def _notify(
@@ -84,18 +103,16 @@ def generate_constant_digits(
     label = dataset_name or f"{const_name}_base{radix}"
     _notify(progress_cb, label, 0.05, f"Вычисляем {const_name} (radix={radix}, N={length:,}) через mpmath")
 
-    # Берём небольшой запас точности (guard digits/bits), чтобы на границе не было ошибок округления
+    # Берём небольшой запас точности (guard digits/bits), изолируя mpmath от глобального состояния
     if radix == 10:
-        mp.mp.dps = length + 32
-        val = _mpmath_constant_value(const_name)
-        frac = val - int(val)
-        _notify(progress_cb, label, 0.65, "Переводим дробную часть в строку цифр")
-        # Просим length + 10 знаков после запятой в научной/обычной записи, убираем '0.'
-        s = mp.nstr(frac, length + 10, strip_zeros=False)
+        with mp.workdps(length + 32):
+            val = _mpmath_constant_value(const_name)
+            frac = val - int(val)
+            _notify(progress_cb, label, 0.65, "Переводим дробную часть в строку цифр")
+            s = mp.nstr(frac, length + 10, strip_zeros=False)
         if "." not in s:
             raise RuntimeError(f"Неожиданный формат строки mpmath для {const_name}: {s[:30]}")
         frac_str = s.split(".", 1)[1]
-        # Если mpmath выдал экспоненциальную запись вида '0.xxxxe-1' (для малых дробей — не наш случай, но проверим)
         if "e" in frac_str or "E" in frac_str:
             raise RuntimeError(f"Экспоненциальная запись при разборе {const_name}")
         frac_str = frac_str[:length]
@@ -106,12 +123,12 @@ def generate_constant_digits(
         digits = digits.copy()
     else:
         bits_per_digit = 1 if radix == 2 else 4
-        mp.mp.prec = length * bits_per_digit + 128
-        val = _mpmath_constant_value(const_name)
-        frac = val - int(val)
-        _notify(progress_cb, label, 0.65, f"Извлекаем цифры в Base-{radix} из двоичной мантиссы")
-        # Масштабируем дробную часть на radix^length через сдвиг степени двойки — это точно и быстро
-        scaled = int(mp.ldexp(frac, length * bits_per_digit))
+        with mp.workprec(length * bits_per_digit + 128):
+            val = _mpmath_constant_value(const_name)
+            frac = val - int(val)
+            _notify(progress_cb, label, 0.65, f"Извлекаем цифры в Base-{radix} из двоичной мантиссы")
+            # Масштабируем дробную часть на radix^length через сдвиг степени двойки
+            scaled = int(mp.ldexp(frac, length * bits_per_digit))
         if radix == 2:
             raw_str = f"{scaled:0{length}b}"[-length:]
             digits = np.frombuffer(raw_str.encode("ascii"), dtype=np.uint8) - ord("0")
@@ -141,28 +158,42 @@ def generate_mt19937_digits(
     return digits
 
 
+def _read_random_bytes(num_bytes: int, deterministic: bool, seed: int, block_idx: int) -> bytes:
+    if not deterministic:
+        return os.urandom(num_bytes)
+    h = hashlib.shake_256(f"pi_lab_csprng_v1:{seed}:{block_idx}".encode("ascii"))
+    return h.digest(num_bytes)
+
+
 def generate_csprng_digits(
     length: int,
     radix: int = 10,
     progress_cb: ProgressCallback | None = None,
     dataset_name: str = "csprng",
+    deterministic: bool = False,
+    seed: int = 42,
 ) -> np.ndarray:
-    """Генерирует криптостойкие случайные цифры через os.urandom без modulo-bias."""
-    _notify(progress_cb, dataset_name, 0.1, f"Читаем энтропию из os.urandom (N={length:,})")
+    """Генерирует криптостойкие случайные цифры через os.urandom (или SHAKE-256 при deterministic=True) без modulo-bias.
+
+    По умолчанию читает системную энтропию из os.urandom (недетерминированный поток).
+    При deterministic=True строит воспроизводимый криптографический поток на базе SHAKE-256 с rejection sampling.
+    """
+    src_label = f"SHAKE-256 (seed={seed})" if deterministic else "os.urandom"
+    _notify(progress_cb, dataset_name, 0.1, f"Читаем энтропию из {src_label} (N={length:,})")
+    block_idx = 0
     if 256 % radix == 0:
-        # Для radix 2 и 16 остаток по модулю не даёт перекоса вероятностей
-        raw = np.frombuffer(os.urandom(length), dtype=np.uint8)
+        raw = np.frombuffer(_read_random_bytes(length, deterministic, seed, block_idx), dtype=np.uint8)
         digits = (raw % radix).astype(np.uint8)
     else:
-        # Для radix=10 отбрасываем байты >= 250 (rejection sampling), иначе цифры 0..5 будут встречаться чаще 6..9!
+        # Для radix=10 отбрасываем байты >= 250 (rejection sampling), чтобы не было перекоса цифр 0..5
         limit = (256 // radix) * radix
         chunks: list[np.ndarray] = []
         collected = 0
         while collected < length:
             need = length - collected
-            # Берём с небольшим запасом, так как ~2.3% байтов отсеется
             batch_size = max(int(need * 1.05) + 64, 4096)
-            raw = np.frombuffer(os.urandom(batch_size), dtype=np.uint8)
+            raw = np.frombuffer(_read_random_bytes(batch_size, deterministic, seed, block_idx), dtype=np.uint8)
+            block_idx += 1
             valid = raw[raw < limit] % radix
             if valid.size > need:
                 valid = valid[:need]
@@ -186,7 +217,7 @@ def generate_rational_digits(
     _notify(progress_cb, dataset_name, 0.05, f"Вычисляем {numerator}/{denominator} (N={length:,})")
     digits = np.empty(length, dtype=np.uint8)
     rem = numerator % denominator
-    # Для ускорения пишем сразу крупными блоками по 18 цифр (влезает в int64), если radix == 10
+    # Для ускорения пишем блоками по 9 цифр в длинной арифметике Python int, если radix == 10
     if radix == 10:
         block_size = 9
         scale = 10**block_size
@@ -225,9 +256,9 @@ def generate_rational_mpmath_digits(
 ) -> np.ndarray:
     """Генерирует дробную часть rational через mpmath (dps >= length) для эталонной точности."""
     _notify(progress_cb, dataset_name, 0.1, f"Вычисляем {numerator}/{denominator} через mpmath (dps={length:,})")
-    mp.mp.dps = int(length) + 64
-    val = mp.mpf(numerator) / mp.mpf(denominator)
-    s = mp.nstr(val, int(length) + 16, min_fixed=-(int(length) + 128), strip_zeros=False)
+    with mp.workdps(int(length) + 64):
+        val = mp.mpf(numerator) / mp.mpf(denominator)
+        s = mp.nstr(val, int(length) + 16, min_fixed=-(int(length) + 128), strip_zeros=False)
     if "." not in s or "e" in s or "E" in s:
         raise RuntimeError(f"Неожиданный формат строки mpmath для {numerator}/{denominator}: {s[:40]}")
     frac_str = s.split(".", 1)[1][:length]
@@ -362,8 +393,8 @@ def generate_pi_cf_tokens(
     # В среднем ~2.15 токена на неполное частное и ~3.42 бита на частное + хороший запас точности
     precision_bits = max(int(length * 2.2), 128_000)
     t0 = time.perf_counter()
-    mp.mp.prec = precision_bits + 256
-    p0 = int(mp.ldexp(mp.pi, precision_bits))
+    with mp.workprec(precision_bits + 256):
+        p0 = int(mp.ldexp(mp.pi, precision_bits))
     q0 = 1 << precision_bits
     _notify(progress_cb, dataset_name, 0.45, "Извлекаем неполные частные алгоритмом Лемера")
 
@@ -435,26 +466,6 @@ def apply_hacked_pi_algebraic(
                 mask[t + offset] = 1
 
     _notify(progress_cb, dataset_name, 1.0, "Готово")
-    return digits, mask
-
-
-def _legacy_biased_backdoor_v1(
-    base_digits: np.ndarray,
-    lag1: int = 24,
-    lag2: int = 7,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Первая черновая версия закладки (отключена).
-
-    При условии (a + b) % 10 == 0 и a == c формула (3*a + b + 1) % 10 сворачивалась в (2*a + 1) % 10 —
-    выдавала только нечётные цифры {1, 3, 5, 7, 9} при плотности ~1%, из-за чего палилась по chi2 (p=3.94e-19).
-    """
-    digits = base_digits.copy()
-    mask = np.zeros(len(digits), dtype=np.uint8)
-    for t in range(max(lag1, lag2, 1), len(digits)):
-        a, b, c = int(digits[t - lag1]), int(digits[t - lag2]), int(digits[t - 1])
-        if (a + b) % 10 == 0 and a == c:
-            digits[t] = (3 * a + b + 1) % 10
-            mask[t] = 1
     return digits, mask
 
 
@@ -550,6 +561,17 @@ def list_available_datasets(config: dict[str, Any]) -> list[str]:
     return list(_build_registry(config).keys())
 
 
+def _read_parent_sha256(data_dir: Path, parent_name: str) -> str | None:
+    parent_meta_path = data_dir / f"{parent_name}_meta.json"
+    if not parent_meta_path.exists():
+        return None
+    try:
+        data = json.loads(parent_meta_path.read_text(encoding="utf-8"))
+        return str(data["hash"]) if "hash" in data else None
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def _try_load_cached_dataset(
     name: str,
     spec: dict[str, Any],
@@ -571,10 +593,29 @@ def _try_load_cached_dataset(
             and (not expects_mask or mask_path.exists())
         ):
             return None
+        if spec["kind"] == "csprng_backdoor":
+            recorded_parent = cached_meta.get("parent_sha256")
+            current_parent = _read_parent_sha256(digits_path.parent, "csprng")
+            if recorded_parent is not None and current_parent is not None and recorded_parent != current_parent:
+                warnings.warn(
+                    f"Кэш {name} устарел: изменился SHA-256 родительского csprng, перегенерируем.",
+                    stacklevel=2,
+                )
+                return None
+
         digits = np.load(digits_path)
         mask = np.load(mask_path) if expects_mask else None
         if len(digits) != target_length:
             return None
+        expected_hash = cached_meta.get("hash")
+        if expected_hash:
+            actual_hash = hashlib.sha256(digits.tobytes()).hexdigest()
+            if actual_hash != expected_hash:
+                warnings.warn(
+                    f"Несовпадение SHA-256 для кэша {digits_path.name}; перегенерируем датасет.",
+                    stacklevel=2,
+                )
+                return None
         _notify(progress_cb, name, 1.0, "Загружено из кэша")
         return DatasetArtifact(
             name=name,
@@ -604,7 +645,14 @@ def _generate_from_spec(
     if kind == "mt19937":
         return generate_mt19937_digits(target_length, radix, int(spec["seed"]), progress_cb, name), None
     if kind == "csprng":
-        return generate_csprng_digits(target_length, radix, progress_cb, name), None
+        return generate_csprng_digits(
+            target_length,
+            radix,
+            progress_cb,
+            name,
+            deterministic=bool(spec.get("deterministic", False)),
+            seed=int(spec.get("seed", config.get("seed", 42))),
+        ), None
     if kind == "rational":
         return generate_rational_digits(int(spec["num"]), int(spec["den"]), target_length, radix, progress_cb, name), None
     if kind == "rational_mpmath":
@@ -684,6 +732,14 @@ def get_or_create_dataset(
         "mask_count": int(mask.sum()) if mask is not None else 0,
         "mask_fraction": float(mask.mean()) if mask is not None else 0.0,
     }
+    if spec["kind"] == "csprng_backdoor":
+        parent_sha = _read_parent_sha256(data_dir, "csprng")
+        if parent_sha is not None:
+            meta["parent_sha256"] = parent_sha
+    elif spec["kind"] in ("hacked_tier1", "hacked_algebraic"):
+        parent_sha = _read_parent_sha256(data_dir, "true_pi")
+        if parent_sha is not None:
+            meta["parent_sha256"] = parent_sha
     if "period" in spec:
         meta["period"] = int(spec["period"])
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

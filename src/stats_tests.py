@@ -1,4 +1,4 @@
-# Классическая статистика и оценка сжимаемости (chi2, блочный KS, ACF, gzip/lzma)
+# Проверка равномерности (chi2, блочный KS, ACF с поправкой Бонферрони) и оценка сжимаемости (gzip/lzma)
 import gzip
 import lzma
 import math
@@ -87,20 +87,27 @@ def autocorrelation_function(digits: np.ndarray, max_lag: int = 64) -> dict[str,
             for lag in lags
         ]
 
-    # Доверительный интервал 95% для белого шума: ±1.96 / sqrt(N)
-    conf_bound = 1.96 / math.sqrt(n)
+    # Доверительный интервал 95%: сырой 1.96/sqrt(N) и с поправкой Бонферрони на max_lag тестов
+    conf_bound_raw = 1.96 / math.sqrt(n)
+    conf_bound_bonferroni = float(stats.norm.ppf(1.0 - 0.05 / (2.0 * max_lag)) / math.sqrt(n))
     abs_vals = [abs(v) for v in acf_values]
     max_idx = int(np.argmax(abs_vals))
-    significant_lags = [lag for lag, val in zip(lags, acf_values) if abs(val) > conf_bound]
+    significant_lags_raw = [lag for lag, val in zip(lags, acf_values) if abs(val) > conf_bound_raw]
+    significant_lags_bonferroni = [lag for lag, val in zip(lags, acf_values) if abs(val) > conf_bound_bonferroni]
 
     return {
         "acf_lags": lags,
         "acf_values": acf_values,
-        "acf_conf_bound_95": conf_bound,
+        "acf_conf_bound_95": conf_bound_raw,
+        "acf_conf_bound_raw": conf_bound_raw,
+        "acf_conf_bound_bonferroni": conf_bound_bonferroni,
         "acf_max_abs": float(abs_vals[max_idx]),
         "acf_max_lag": lags[max_idx],
-        "acf_significant_count": len(significant_lags),
-        "acf_significant_lags_sample": significant_lags[:10],
+        "acf_significant_count": len(significant_lags_bonferroni),
+        "acf_significant_count_raw": len(significant_lags_raw),
+        "acf_significant_count_bonferroni": len(significant_lags_bonferroni),
+        "acf_significant_lags_sample": significant_lags_bonferroni[:10],
+        "acf_significant_lags_raw_sample": significant_lags_raw[:10],
     }
 
 

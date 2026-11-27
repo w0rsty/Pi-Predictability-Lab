@@ -1,5 +1,4 @@
-# Эксперимент 1 (Sanity Check): true_pi против 3 уровней hacked_pi.
-# Без позитивного контроля H1 нулевой результат на true_pi ничего не доказывает.
+# Проверка пайплайна (Exp 1): true_pi против 3 уровней синтетических закладок hacked_pi
 import argparse
 import json
 from pathlib import Path
@@ -13,7 +12,7 @@ from src.dataset import create_dataloaders, split_sequence_chronologically, veri
 from src.evaluator import probe_gru_hidden_dynamics, probe_transformer_attention
 from src.models import build_model, count_parameters
 from src.trainer import create_run_dir, resolve_device, train_model
-from src.visualizer import (
+from src.viz import (
     plot_arch_battle_comparison,
     plot_attention_maps,
     plot_exp1_test_xray,
@@ -26,6 +25,8 @@ EXP1_DATASETS = ["true_pi", "hacked_pi_tier1", "hacked_pi_tier2", "hacked_pi_tie
 
 
 def _find_completed_run(runs_root: Path, arch: str, ds_name: str, expected_params: int) -> dict[str, Any] | None:
+    if not runs_root.exists():
+        return None
     prefix = f"exp1_{arch}_{ds_name}_"
     candidates = sorted([p for p in runs_root.iterdir() if p.is_dir() and p.name.startswith(prefix)], key=lambda p: p.name, reverse=True)
     for run_dir in candidates:

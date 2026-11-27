@@ -1,4 +1,4 @@
-# Генерация и кэширование последовательностей (1M цифр) + классическая статистика (chi2, KS, ACF, gzip/lzma)
+# Скрипт генерации последовательностей (N=1M) и запуска классических статтестов (chi2, KS, ACF, gzip/lzma)
 import json
 from datetime import datetime
 from pathlib import Path

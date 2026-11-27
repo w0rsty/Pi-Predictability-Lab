@@ -1,4 +1,4 @@
-# Нейросетевые архитектуры (~50K / ~250K / ~1.5M) с выравниванием кратностью 8 под Tensor Cores
+# Реализация MLP, 1D-CNN, GRU и каузального мини-трансформера (~50K / ~250K / ~1.5M)
 import math
 from typing import Any
 
@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Целевые бюджеты обучаемых параметров для честного сравнения и стресс-теста
+# Целевые бюджеты обучаемых параметров для сопоставления архитектур и теста на переобучение
 CAPACITY_BUDGETS: dict[str, int] = {
     "light": 50_000,
     "medium": 250_000,
@@ -235,9 +235,10 @@ class DigitGRU(nn.Module):
             self.gru.flatten_parameters()
         emb = self.embedding(x)
         out, _ = self.gru(emb)
-        # Приводим выход GRU к FP32 перед LayerNorm и головой, чтобы избежать потерь точности в AMP
-        out_f32 = out.float()
-        logits_seq = self.head(self.head_drop(self.head_norm(out_f32)))
+        # Выключаем autocast на выходе GRU, чтобы head_norm и голова считались в полном FP32
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            out_f32 = out.float()
+            logits_seq = self.head(self.head_drop(self.head_norm(out_f32)))
         return logits_seq, out_f32
 
     def extract_hidden_states(self, x: torch.Tensor, all_positions: bool = False) -> torch.Tensor:
@@ -246,17 +247,19 @@ class DigitGRU(nn.Module):
             self.gru.flatten_parameters()
         emb = self.embedding(x)
         out, _ = self.gru(emb)
-        if all_positions:
-            return self.head_norm(out.float())
-        return self.head_norm(out[:, -1, :].float())
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            if all_positions:
+                return self.head_norm(out.float())
+            return self.head_norm(out[:, -1, :].float())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.is_cuda:
             self.gru.flatten_parameters()
         emb = self.embedding(x)          # (B, L, d_emb)
         out, _ = self.gru(emb)           # (B, L, H), где H кратно 8 под cuDNN Tensor Cores
-        last_hidden = out[:, -1, :].float()  # (B, H)
-        return self.head(self.head_drop(self.head_norm(last_hidden)))
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            last_hidden = out[:, -1, :].float()  # (B, H)
+            return self.head(self.head_drop(self.head_norm(last_hidden)))
 
 
 class CausalTransformerBlock(nn.Module):
@@ -317,10 +320,15 @@ class CausalTransformerBlock(nn.Module):
                 is_causal=True,
             )
         else:
-            # Явный расчёт весов внимания (B, n_heads, L, L) для диагностики
+            # Явный расчёт весов внимания (B, n_heads, L, L). Строгая верхнетреугольная маска
+            # строится автоматически при causal_mask=None, чтобы исключить утечку будущих позиций.
             scores = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-            if causal_mask is not None:
-                scores = scores.masked_fill(causal_mask, float("-inf"))
+            if causal_mask is None:
+                causal_mask = torch.triu(
+                    torch.ones((seq_len, seq_len), dtype=torch.bool, device=x.device),
+                    diagonal=1,
+                )
+            scores = scores.masked_fill(causal_mask, float("-inf"))
             attn_weights = F.softmax(scores.float(), dim=-1)
             attn_probs = F.dropout(attn_weights, p=self.dropout, training=self.training)
             attn_out = attn_probs.to(v.dtype) @ v
@@ -401,9 +409,10 @@ class DigitTransformer(nn.Module):
         for block in self.blocks:
             h, _ = block(h, causal_mask=None, return_attn=False)
 
-        if all_positions:
-            return self.ln_f(h.float())
-        return self.ln_f(h[:, -1, :].float())
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            if all_positions:
+                return self.ln_f(h.float())
+            return self.ln_f(h[:, -1, :].float())
 
     def forward_with_head_ablation(
         self,
@@ -439,8 +448,9 @@ class DigitTransformer(nn.Module):
             if return_attn and attn_w is not None:
                 attn_layers.append(attn_w)
 
-        last_hidden = self.ln_f(h[:, -1, :].float())
-        logits = F.linear(last_hidden, self.head.weight.float())
+        with torch.amp.autocast(device_type=x.device.type, enabled=False):
+            last_hidden = self.ln_f(h[:, -1, :].float())
+            logits = F.linear(last_hidden, self.head.weight.float())
 
         if return_attn:
             stacked_attn = torch.stack(attn_layers, dim=1)

@@ -1,4 +1,4 @@
-# Теоретико-информационный эталон PPM-C (max_order=8) против 4 нейросетей
+# Сравнение суффиксного компрессора PPM-C (max_order=8) с четырьмя нейросетями на Exp 1
 import json
 import math
 from pathlib import Path
@@ -12,7 +12,7 @@ from src.data_generator import get_or_create_dataset, load_config, seed_everythi
 from src.dataset import split_sequence_chronologically, verify_zero_leakage
 from src.evaluator import wilson_ci
 from src.trainer import create_run_dir
-from src.visualizer import plot_ppm_vs_neural_bits
+from src.viz import plot_ppm_vs_neural_bits
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATASETS = ["true_pi", "hacked_pi_tier1", "hacked_pi_tier2", "hacked_pi_tier3"]
@@ -20,11 +20,12 @@ DATASETS = ["true_pi", "hacked_pi_tier1", "hacked_pi_tier2", "hacked_pi_tier3"]
 
 def load_latest_neural_comparison(runs_root: Path) -> pd.DataFrame:
     """Подхватывает итоговую таблицу 4 нейросетей из runs/ или results/."""
-    summaries = sorted([p for p in runs_root.iterdir() if p.is_dir() and p.name.startswith("exp1_transformer_summary_")], key=lambda p: p.name, reverse=True)
-    for cand in summaries:
-        csv_p = cand / "arch_comparison_metrics.csv"
-        if csv_p.exists():
-            return pd.read_csv(csv_p)
+    if runs_root.exists():
+        summaries = sorted([p for p in runs_root.iterdir() if p.is_dir() and p.name.startswith("exp1_transformer_summary_")], key=lambda p: p.name, reverse=True)
+        for cand in summaries:
+            csv_p = cand / "arch_comparison_metrics.csv"
+            if csv_p.exists():
+                return pd.read_csv(csv_p)
     fallback = ROOT_DIR / "results" / "03_exp1_sanity" / "arch_comparison_metrics.csv"
     if fallback.exists():
         return pd.read_csv(fallback)

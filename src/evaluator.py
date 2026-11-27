@@ -1,5 +1,6 @@
-# Оценка моделей на val/test: Accuracy, Cross-Entropy, PPL, энтропия, Wilson CI и тест Макнемара
+# Вычисление Accuracy, Cross-Entropy, Perplexity, Wilson CI, Холма — Бонферрони, MDE и теста Макнемара
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -16,11 +17,14 @@ def evaluate_model(
     device: torch.device,
     radix: int,
     use_amp: bool = True,
+    amp_dtype: str = "float16",
     collect_transitions: bool = False,
 ) -> dict[str, Any]:
-    """Прогоняет модель по DataLoader без расчёта градиентов и собирает честные метрики."""
+    """Прогоняет модель по DataLoader без градиентов и собирает основные метрики."""
     model.eval()
     amp_enabled = bool(use_amp and device.type == "cuda")
+    use_bf16 = amp_dtype == "bfloat16" and device.type == "cuda" and torch.cuda.is_bf16_supported()
+    autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
 
     total_samples = 0
     total_correct = 0
@@ -44,7 +48,7 @@ def evaluate_model(
         contexts = contexts.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
         mask_flags = mask_flags.to(device, non_blocking=True)
-        with torch.amp.autocast("cuda", enabled=amp_enabled):
+        with torch.amp.autocast("cuda", dtype=autocast_dtype, enabled=amp_enabled):
             logits_f32 = model(contexts).float()
 
         log_probs = F.log_softmax(logits_f32, dim=-1)
@@ -226,15 +230,17 @@ def compute_binomial_z_score(
     n_samples: int,
     ci_low: float | None = None,
     ci_high: float | None = None,
-) -> dict[str, float]:
+) -> dict[str, float | str]:
     """Считает Z-score отклонения точности от случайного угадывания 1/radix и его ДИ в σ."""
     from scipy import stats
 
-    p0 = 1.0 / float(radix)
-    se0 = math.sqrt((p0 * (1.0 - p0)) / max(n_samples, 1))
+    p0 = 1.0 / float(max(radix, 2))
+    n_eff = max(int(n_samples), 1)
+    se0 = math.sqrt((p0 * (1.0 - p0)) / n_eff)
     z_val = (acc - p0) / se0 if se0 > 0 else 0.0
     z_lo = ((ci_low - p0) / se0) if ci_low is not None and se0 > 0 else z_val
     z_hi = ((ci_high - p0) / se0) if ci_high is not None and se0 > 0 else z_val
+    log10_p = min(0.0, float((stats.norm.logsf(abs(z_val)) + math.log(2.0)) / math.log(10.0)))
     p_two = float(2.0 * stats.norm.sf(abs(z_val)))
     return {
         "random_chance": round(p0, 6),
@@ -242,8 +248,83 @@ def compute_binomial_z_score(
         "z_score": round(z_val, 4),
         "z_ci_low": round(z_lo, 4),
         "z_ci_high": round(z_hi, 4),
-        "z_p_value": round(p_two, 6),
+        "z_p_value": round(p_two, 6) if log10_p >= -300.0 else 0.0,
+        "z_log10_p": round(log10_p, 2),
     }
+
+
+def holm_bonferroni_correction(
+    p_values: Sequence[float],
+    alpha: float = 0.05,
+) -> tuple[list[float], list[bool]]:
+    """Пошаговая поправка Холма — Бонферрони; возвращает (adjusted_p, significant_flags)."""
+    m = len(p_values)
+    if m == 0:
+        return [], []
+    vals = [min(max(float(p), 0.0), 1.0) if math.isfinite(float(p)) else 1.0 for p in p_values]
+    order = sorted(range(m), key=lambda idx: vals[idx])
+    adj_sorted = [0.0] * m
+    running_max = 0.0
+    for rank, orig_idx in enumerate(order):
+        scaled = min(1.0, vals[orig_idx] * (m - rank))
+        running_max = max(running_max, scaled)
+        adj_sorted[rank] = running_max
+
+    adjusted = [0.0] * m
+    for rank, orig_idx in enumerate(order):
+        adjusted[orig_idx] = adj_sorted[rank]
+    significant = [p_adj < alpha for p_adj in adjusted]
+    return adjusted, significant
+
+
+def compute_mde(
+    n: int,
+    p0: float,
+    alpha: float = 0.05,
+    power: float = 0.80,
+) -> dict[str, float]:
+    """Аналитический расчёт стандартной ошибки SE и минимально детектируемого эффекта (MDE)."""
+    from scipy import stats
+
+    n_eff = max(int(n), 1)
+    se = math.sqrt((p0 * (1.0 - p0)) / n_eff)
+    z_beta = float(stats.norm.ppf(power))
+    z_alpha_two = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z_alpha_one = float(stats.norm.ppf(1.0 - alpha))
+    return {
+        "n": float(n_eff),
+        "p0": float(p0),
+        "se": se,
+        "mde_two_sided": (z_alpha_two + z_beta) * se,
+        "mde_one_sided": (z_alpha_one + z_beta) * se,
+    }
+
+
+def block_bootstrap_accuracy_ci(
+    correct_mask: np.ndarray,
+    block_size: int,
+    n_resamples: int = 1000,
+    seed: int = 42,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Блочный бутстрэп ДИ для точности на зависимых рядах (фиксированный блок block_size)."""
+    arr = np.asarray(correct_mask, dtype=np.float64)
+    n = len(arr)
+    if n == 0:
+        return 0.0, 0.0
+    blk = max(1, min(int(block_size), n))
+    n_blocks = max(1, math.ceil(n / blk))
+    max_start = max(1, n - blk + 1)
+    rng = np.random.default_rng(seed)
+
+    # Строим индексную сетку непересекающихся случайных блоков длины blk за один проход
+    starts = rng.integers(0, max_start, size=(n_resamples, n_blocks))
+    offsets = np.arange(blk, dtype=np.int64)
+    idx = (starts[:, :, None] + offsets[None, None, :]).reshape(n_resamples, -1)[:, :n]
+    boot_means = arr[idx].mean(axis=1)
+    lo = float(np.quantile(boot_means, alpha / 2.0))
+    hi = float(np.quantile(boot_means, 1.0 - alpha / 2.0))
+    return round(lo, 6), round(hi, 6)
 
 
 def compute_mcnemar_exact(corr_a: np.ndarray, corr_b: np.ndarray) -> dict[str, Any]:

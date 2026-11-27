@@ -1,8 +1,7 @@
-# Эксперимент 3: влияние системы счисления (Base-2, Base-10, Base-16) и проверка гипотезы BBP
+# Сравнение систем счисления Base-2, Base-10 и Base-16 на знаках pi (BBP-мотивация)
 import argparse
 import json
 import math
-import time
 from pathlib import Path
 from typing import Any
 
@@ -22,46 +21,17 @@ from src.exp_utils import (
     eval_markov_preds_and_speed,
     eval_ppm_preds_and_speed,
     find_latest_csv,
+    predict_and_benchmark,
     read_sec_per_epoch,
     resolve_run_dir,
 )
 from src.models import build_model
 from src.stats_tests import run_full_statistical_suite
-from src.trainer import create_run_dir, remap_legacy_state_dict, resolve_device, train_model
-from src.visualizer import plot_exp3_bases_normalized_bits, plot_exp3_bases_zscore_ci
+from src.trainer import create_run_dir, resolve_device, train_model
+from src.viz import plot_exp3_bases_normalized_bits, plot_exp3_bases_zscore_ci
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 EXP3_BASES = [("pi_base2", "Base-2", 2), ("true_pi", "Base-10", 10), ("pi_base16", "Base-16", 16)]
-
-
-@torch.no_grad()
-def _eval_neural_preds_and_speed(
-    arch: str, run_dir: Path, split: ChronologicalSplit, radix: int, window_size: int, size_tier: str, batch_size: int, num_workers: int, device: torch.device,
-) -> tuple[np.ndarray, float]:
-    loaders = create_dataloaders(split=split, window_size=window_size, batch_size=batch_size, num_workers=num_workers, pin_memory=(device.type == "cuda"))
-    model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier=size_tier)
-    ckpt = torch.load(run_dir / "best_model.pt", map_location=device, weights_only=True)
-    sd, _ = remap_legacy_state_dict(ckpt["model_state_dict"])
-    model.load_state_dict(sd)
-    model = model.to(device).eval()
-
-    amp_enabled = device.type == "cuda"
-    test_loader = loaders["test"]
-    for ctx, _, _ in test_loader:
-        with torch.amp.autocast("cuda", enabled=amp_enabled):
-            _ = model(ctx.to(device, non_blocking=True))
-        break
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    t0, chunks = time.perf_counter(), []
-    for ctx, tgt, _ in test_loader:
-        with torch.amp.autocast("cuda", enabled=amp_enabled):
-            logits = model(ctx.to(device, non_blocking=True))
-        chunks.append((torch.argmax(logits.float(), dim=-1) == tgt.to(device, non_blocking=True)).cpu().numpy())
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-    corr = np.concatenate(chunks, axis=0)
-    return corr, round(float(len(corr) / max(time.perf_counter() - t0, 1e-5)), 1)
 
 
 def _verify_bit_nibble_equivalence(bits_arr: np.ndarray, nibbles_arr: np.ndarray) -> dict[str, Any]:
@@ -149,7 +119,7 @@ def _train_missing_bases(
             if (ds_name, m_name) in records:
                 continue
             seed_everything(seed)
-            loaders = create_dataloaders(split=split, window_size=window_size, batch_size=batch_size, num_workers=num_workers, pin_memory=True)
+            loaders = create_dataloaders(split=split, window_size=window_size, batch_size=batch_size, num_workers=num_workers, pin_memory=True, seed=seed)
             model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier=size_tier)
             res = train_model(model, loaders, config, f"exp3_{arch}_{ds_name}", radix, epochs=max_epochs, early_stopping_patience=patience, enable_early_stopping=True)
             s, tm, hist = res["summary"], res["test_metrics"], res["history"]
@@ -168,6 +138,7 @@ def _collect_preds_and_build_rows(
     window_size = int(config["data"]["default_window_size"])
     batch_size, num_workers = int(config["training"]["batch_size"]), int(config["training"].get("num_workers", 4))
     preds_cache: dict[tuple[str, str], np.ndarray] = {}
+    seed = int(config["seed"])
     for ds_name, _, radix in EXP3_BASES:
         split = splits[ds_name]
         te_y = split.test_digits[window_size:]
@@ -177,15 +148,18 @@ def _collect_preds_and_build_rows(
             preds_cache[(ds_name, f"Markov_k{k}")] = mk_c
             records[(ds_name, f"Markov_k{k}")]["samples_per_sec"] = mk_s
         ppm_c, ppm_s = eval_ppm_preds_and_speed(split, radix, window_size, max_order=8)
-        preds_cache[(ds_name, "PPM_o8")], records[(ds_name, "PPM_o8")]["samples_per_sec"] = ppm_c, ppm_s
+        preds_cache[(ds_name, "PPM_o8")] = ppm_c
+        records[(ds_name, "PPM_o8")]["samples_per_sec"] = ppm_s
         for m_name, arch in CANONICAL_TO_ARCH.items():
             rec = records[(ds_name, m_name)]
-            if (run_dir := resolve_run_dir(rec.get("source"), ROOT_DIR)) is None:
+            run_dir = resolve_run_dir(rec.get("source"), ROOT_DIR)
+            if run_dir is None:
                 continue
             if rec.get("sec_per_epoch") is None:
                 rec["sec_per_epoch"] = read_sec_per_epoch(run_dir, rec.get("train_time_sec"), rec.get("epochs_ran"))
-            corr, sps = _eval_neural_preds_and_speed(arch, run_dir, split, radix, window_size, size_tier, batch_size, num_workers, device)
-            preds_cache[(ds_name, m_name)], rec["samples_per_sec"] = corr, sps
+            corr, sps, _ = predict_and_benchmark(arch, run_dir, split, radix, window_size, size_tier, batch_size, num_workers, device, seed=seed)
+            preds_cache[(ds_name, m_name)] = corr
+            rec["samples_per_sec"] = sps
 
     rows: list[dict[str, Any]] = []
     for ds_name, base_label, radix in EXP3_BASES:

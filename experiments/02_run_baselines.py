@@ -1,4 +1,4 @@
-# Проверка zero-leakage сплита и классические бейзлайны (Uniform, цепи Маркова k=1..3, LightGBM)
+# Скрипт запуска классических и табличных бейзлайнов (Uniform, Markov k=1..3, LightGBM)
 import json
 import math
 from datetime import datetime

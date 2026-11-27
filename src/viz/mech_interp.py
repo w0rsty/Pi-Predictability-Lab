@@ -1,4 +1,4 @@
-# Графики Exp 5: механистическая интерпретируемость (PCA, Head Ablation, Probing) и крипто-аудитор
+# Построение графиков для Эксперимента 5 (PCA, абляция голов, probing и детектор закладок)
 import math
 from pathlib import Path
 from typing import Any
@@ -123,7 +123,7 @@ def plot_exp5_embedding_clock_pca(
 
     apply_lab_layout(
         fig,
-        "Эксперимент 5 (Модуль 1): Геометрия эмбеддингов (2D PCA) — «арифметический циферблат» против шума true_pi",
+        "Эксперимент 5 (Модуль 1): Геометрия эмбеддингов (2D PCA) на структурированных рядах и контроле true_pi",
         height=940,
         width=1540,
         margin={"l": 70, "r": 50, "t": 110, "b": 85},
@@ -289,7 +289,7 @@ def plot_exp5_crypto_backdoor_xray(
     attn_profile: dict[str, Any],
     summary_dir: Path,
 ) -> tuple[Path, Path]:
-    """Двухпанельный рентген крипто-закладки: слепота классики vs пики внимания t-24, t-7."""
+    """Двухпанельный разбор детектора крипто-закладки и профиля внимания по лагам t-24, t-7."""
     fig = make_subplots(
         rows=1,
         cols=2,

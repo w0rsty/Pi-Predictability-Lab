@@ -1,6 +1,5 @@
-# Эксперимент 4: масштабирование окна L (32/64/128), ёмкости (~50K/250K/1.5M) и стресс-тест на запоминание
+# Масштабирование окна L (32/64/128), бюджета параметров (50K/250K/1.5M) и тест на переобучение
 import argparse
-import gc
 import json
 import math
 import shutil
@@ -17,10 +16,10 @@ from src.baselines import PPMCompressor, fit_and_evaluate_ppm
 from src.data_generator import get_or_create_dataset, load_config, seed_everything
 from src.dataset import ChronologicalSplit, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
 from src.evaluator import compute_binomial_z_score, compute_mcnemar_exact, evaluate_model, wilson_ci
-from src.exp_utils import CANONICAL_TO_ARCH, canonical_model_name, find_latest_csv, resolve_run_dir
+from src.exp_utils import CANONICAL_TO_ARCH, canonical_model_name, find_latest_csv, free_gpu, predict_and_benchmark, resolve_run_dir
 from src.models import build_model, count_parameters
-from src.trainer import create_run_dir, remap_legacy_state_dict, resolve_device, train_model
-from src.visualizer import (
+from src.trainer import create_run_dir, resolve_device, train_model
+from src.viz import (
     plot_exp4_capacity_scaling,
     plot_exp4_compute_frontier,
     plot_exp4_memorization_scissors,
@@ -37,47 +36,6 @@ def _pick_batch_size(size_tier: str, window_size: int, arch: str = "") -> int:
     if size_tier == "heavy":
         return 256 if arch == "transformer" else 512
     return 1024 if size_tier == "medium" else 2048
-
-
-def _free_gpu() -> None:
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
-@torch.no_grad()
-def _measure_throughput_and_preds(
-    arch: str, run_dir: Path, split: ChronologicalSplit, radix: int, window_size: int, size_tier: str, batch_size: int, num_workers: int, device: torch.device,
-) -> tuple[float, np.ndarray]:
-    loaders = create_dataloaders(split=split, window_size=window_size, batch_size=batch_size, num_workers=num_workers, pin_memory=(device.type == "cuda"))
-    model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier=size_tier)
-    ckpt = torch.load(run_dir / "best_model.pt", map_location=device, weights_only=True)
-    sd, _ = remap_legacy_state_dict(ckpt["model_state_dict"])
-    model.load_state_dict(sd)
-    model = model.to(device).eval()
-
-    amp_enabled = device.type == "cuda"
-    test_loader = loaders["test"]
-    for ctx, _, _ in test_loader:
-        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
-            _ = model(ctx.to(device, non_blocking=True))
-        break
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-    t0, chunks = time.perf_counter(), []
-    for ctx, tgt, _ in test_loader:
-        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=amp_enabled):
-            logits = model(ctx.to(device, non_blocking=True))
-        chunks.append((torch.argmax(logits.float(), dim=-1) == tgt.to(device, non_blocking=True)).cpu().numpy())
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-    corr = np.concatenate(chunks, axis=0)
-    sps = round(float(len(corr) / max(time.perf_counter() - t0, 1e-5)), 1)
-    del model
-    _free_gpu()
-    return sps, corr
 
 
 def _build_metric_row(
@@ -145,7 +103,7 @@ def _run_or_reuse_neural(
     seed_everything(seed)
     bs = _pick_batch_size(size_tier, window_size, arch=arch)
     num_workers = int(config["training"].get("num_workers", 4))
-    loaders = create_dataloaders(split=split, window_size=window_size, batch_size=bs, num_workers=num_workers, pin_memory=True)
+    loaders = create_dataloaders(split=split, window_size=window_size, batch_size=bs, num_workers=num_workers, pin_memory=True, seed=seed)
     model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier=size_tier)
     res = train_model(
         model, loaders, config, f"exp4_{block.lower()}_{arch}_{ds_name}_L{window_size}_{size_tier}",
@@ -153,10 +111,10 @@ def _run_or_reuse_neural(
         scheduler_type=scheduler_type, amp_dtype="bfloat16", early_stopping_patience=patience, enable_early_stopping=True,
     )
     del model, loaders
-    _free_gpu()
+    free_gpu()
 
     s, tm, hist = res["summary"], res["test_metrics"], res["history"]
-    sps, _ = _measure_throughput_and_preds(arch, Path(s["run_dir"]), split, radix, window_size, size_tier, bs, num_workers, device)
+    _, sps, _ = predict_and_benchmark(arch, Path(s["run_dir"]), split, radix, window_size, size_tier, bs, num_workers, device, amp_dtype="bfloat16", seed=seed)
     sec_ep = round(float(np.mean([h["epoch_time_sec"] for h in hist])), 3) if hist else None
     row = _build_metric_row(
         block, ds_name, hyp_group, radix, window_size, size_tier, m_name, int(s["param_count"]),
@@ -188,26 +146,30 @@ def _train_mem_epoch(model: torch.nn.Module, loader: torch.utils.data.DataLoader
 
 
 def run_block_d_memorization(pi_digits: np.ndarray, summary_dir: Path, config: dict[str, Any], seed: int = 42, epochs: int = 200, batch_size: int = 128) -> pd.DataFrame:
-    # Блок D: dropout=0 и без EarlyStopping — даём heavy 1.54M вызубрить 10K знаков pi для показа «ножниц»
+    # Блок D: dropout=0, без EarlyStopping — переобучение heavy 1.54M на 10K знаках pi (Train vs Test)
     curve_path = summary_dir / "memorization_curve.csv"
-    if curve_path.exists() and len(existing := pd.read_csv(curve_path)) >= epochs:
-        return existing
+    if curve_path.exists():
+        existing = pd.read_csv(curve_path)
+        if len(existing) >= epochs:
+            return existing
 
     seed_everything(seed)
     device = resolve_device(str(config["training"].get("device", "cuda")))
     split = split_sequence_chronologically(pi_digits[:10_000], mask=None, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1)
     verify_zero_leakage(split, window_size=64)
-    loaders = create_dataloaders(split=split, window_size=64, batch_size=batch_size, num_workers=2, pin_memory=True)
+    loaders = create_dataloaders(split=split, window_size=64, batch_size=batch_size, num_workers=2, pin_memory=True, seed=seed)
     model = build_model("transformer", radix=10, window_size=64, size_tier="heavy", dropout=0.0).to(device)
-    p_cnt, optimizer = count_parameters(model), torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.0)
-    use_amp, ln2 = device.type == "cuda", math.log(2.0)
+    p_cnt = count_parameters(model)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.0)
+    use_amp = device.type == "cuda"
+    ln2 = math.log(2.0)
 
     history, t_start = [], time.perf_counter()
     for ep in range(1, epochs + 1):
         ep_t0 = time.perf_counter()
         tr_ce, tr_acc = _train_mem_epoch(model, loaders["train"], optimizer, device, use_amp)
-        val_m = evaluate_model(model, loaders["val"], device=device, radix=10, use_amp=use_amp, collect_transitions=False)
-        test_m = evaluate_model(model, loaders["test"], device=device, radix=10, use_amp=use_amp, collect_transitions=False)
+        val_m = evaluate_model(model, loaders["val"], device=device, radix=10, use_amp=use_amp, amp_dtype="bfloat16", collect_transitions=False)
+        test_m = evaluate_model(model, loaders["test"], device=device, radix=10, use_amp=use_amp, amp_dtype="bfloat16", collect_transitions=False)
         history.append({
             "epoch": ep, "train_loss": round(tr_ce, 6), "train_acc": round(tr_acc, 6), "train_bits": round(tr_ce / ln2, 6),
             "val_loss": round(float(val_m["cross_entropy"]), 6), "val_acc": round(float(val_m["overall_acc"]), 6), "val_bits": round(float(val_m["cross_entropy"]) / ln2, 6),
@@ -222,7 +184,7 @@ def run_block_d_memorization(pi_digits: np.ndarray, summary_dir: Path, config: d
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     torch.save({"epoch": epochs, "model_state_dict": model.state_dict(), "param_count": p_cnt, "train_acc": history[-1]["train_acc"], "test_acc": history[-1]["test_acc"]}, ckpt_dir / "transformer_memorization_10k_heavy.pt")
     del model, loaders, optimizer
-    _free_gpu()
+    free_gpu()
     mem_df = pd.DataFrame(history)
     mem_df.to_csv(curve_path, index=False)
     return mem_df
@@ -250,20 +212,27 @@ def _finalize_exp4(summary_dir: Path, rows_map: dict, rat97_split: Chronological
 
     ckpt_dir = summary_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    rat_key, ckpt_meta = ("Block_B_PhaseTransition_H1", "rational_1_97", 128, "medium", "DigitTransformer"), []
-    if rat_key in rows_map and (src_dir := resolve_run_dir(rows_map[rat_key]["source"], ROOT_DIR)) and (src_dir / "best_model.pt").exists():
-        dst = ckpt_dir / "transformer_rational_1_97_L128.pt"
-        shutil.copy2(src_dir / "best_model.pt", dst)
-        ckpt_meta.append({"model": "DigitTransformer", "dataset": "rational_1_97", "period": 96, "window_size": 128, "size_tier": "medium", "radix": 10, "d_model": 96, "n_heads": 4, "n_layers": 3, "param_count": rows_map[rat_key]["params_count"], "test_acc": rows_map[rat_key]["test_acc"], "source_run_dir": str(src_dir), "checkpoint_file": dst.name})
+    rat_key = ("Block_B_PhaseTransition_H1", "rational_1_97", 128, "medium", "DigitTransformer")
+    ckpt_meta = []
+    if rat_key in rows_map:
+        src_dir = resolve_run_dir(rows_map[rat_key]["source"], ROOT_DIR)
+        if src_dir is not None and (src_dir / "best_model.pt").exists():
+            dst = ckpt_dir / "transformer_rational_1_97_L128.pt"
+            shutil.copy2(src_dir / "best_model.pt", dst)
+            ckpt_meta.append({"model": "DigitTransformer", "dataset": "rational_1_97", "period": 96, "window_size": 128, "size_tier": "medium", "radix": 10, "d_model": 96, "n_heads": 4, "n_layers": 3, "param_count": rows_map[rat_key]["params_count"], "test_acc": rows_map[rat_key]["test_acc"], "source_run_dir": str(src_dir), "checkpoint_file": dst.name})
     (ckpt_dir / "checkpoints_metadata.json").write_text(json.dumps(ckpt_meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     num_workers = int(config["training"].get("num_workers", 4))
+    seed = int(config.get("seed", 42))
     aligned_preds: dict[tuple[str, int], np.ndarray] = {}
     for arch, m_name in (("mlp", "DigitMLP"), ("gru", "DigitGRU"), ("transformer", "DigitTransformer")):
         for L in (32, 64, 128):
             r = rows_map.get(("Block_B_PhaseTransition_H1", "rational_1_97", L, "medium", m_name))
-            if r and (rd := resolve_run_dir(r["source"], ROOT_DIR)):
-                _, corr = _measure_throughput_and_preds(arch, rd, rat97_split, 10, L, "medium", _pick_batch_size("medium", L), num_workers, device)
+            if not r:
+                continue
+            rd = resolve_run_dir(r["source"], ROOT_DIR)
+            if rd is not None:
+                corr, _, _ = predict_and_benchmark(arch, rd, rat97_split, 10, L, "medium", _pick_batch_size("medium", L), num_workers, device, amp_dtype="bfloat16", seed=seed)
                 aligned_preds[(m_name, L)] = corr[128 - L :]
 
     ppm97 = PPMCompressor(radix=10, max_order=8).fit(rat97_split.train_digits)

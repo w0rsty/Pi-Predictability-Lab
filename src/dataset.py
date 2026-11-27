@@ -1,10 +1,12 @@
-# Хронологическое разбиение последовательностей (80/10/10) и Dataset без утечки данных
+# Хронологическое разбиение (80/10/10) и оконные датасеты без утечки данных
 from dataclasses import dataclass
 from typing import Any, Iterator
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+from src.data_generator import make_dataloader_generator, seed_worker
 
 
 @dataclass
@@ -57,8 +59,35 @@ def split_sequence_chronologically(
     )
 
 
-def verify_zero_leakage(split: ChronologicalSplit, window_size: int) -> dict[str, Any]:
-    """Проверяет, что окна Train, Val и Test физически не пересекаются ни по одному индексу."""
+def _dataset_index_bounds(ds: "SequenceWindowDataset", expected_offset: int, expected_window: int, name: str) -> tuple[int, int]:
+    if ds.window_size != expected_window:
+        raise AssertionError(f"{name}: window_size {ds.window_size} != {expected_window}")
+    if len(ds) <= 0:
+        raise AssertionError(f"{name}: пустой датасет")
+    offset = int(ds.global_offset)
+    if offset != expected_offset:
+        raise AssertionError(f"{name}: global_offset {offset} != {expected_offset}")
+    min_ctx = offset
+    max_tgt = offset + (len(ds) - 1) + ds.window_size
+    if max_tgt != offset + len(ds.digits) - 1:
+        raise AssertionError(f"{name}: рассинхрон длины среза и числа окон")
+    # Выборочно сверяем инвариант target_pos == context_end_pos + 1 на реальных окнах
+    for sample_idx in (0, len(ds) // 2, len(ds) - 1):
+        ctx_end = offset + sample_idx + ds.window_size - 1
+        tgt_pos = offset + sample_idx + ds.window_size
+        if tgt_pos != ctx_end + 1:
+            raise AssertionError(f"{name}: таргет попал внутрь контекста")
+    return min_ctx, max_tgt
+
+
+def verify_zero_leakage(
+    split: ChronologicalSplit,
+    window_size: int,
+    train_ds: "SequenceWindowDataset | None" = None,
+    val_ds: "SequenceWindowDataset | None" = None,
+    test_ds: "SequenceWindowDataset | None" = None,
+) -> dict[str, Any]:
+    """Проверяет отсутствие пересечения глобальных индексов и памяти между Train, Val и Test."""
     tr_s, tr_e = split.train_range
     va_s, va_e = split.val_range
     te_s, te_e = split.test_range
@@ -70,10 +99,21 @@ def verify_zero_leakage(split: ChronologicalSplit, window_size: int) -> dict[str
     assert len(split.train_digits) > window_size
     assert len(split.val_digits) > window_size
     assert len(split.test_digits) > window_size
-
-    # Последний индекс (контекста и таргета) в train строго меньше первого индекса val и т.д.
     assert (tr_e - 1) < va_s
     assert (va_e - 1) < te_s
+    assert not np.shares_memory(split.train_digits, split.val_digits)
+    assert not np.shares_memory(split.val_digits, split.test_digits)
+    assert not np.shares_memory(split.train_digits, split.test_digits)
+
+    if train_ds is not None and val_ds is not None and test_ds is not None:
+        tr_min_ctx, tr_max_tgt = _dataset_index_bounds(train_ds, tr_s, window_size, "train_ds")
+        va_min_ctx, va_max_tgt = _dataset_index_bounds(val_ds, va_s, window_size, "val_ds")
+        te_min_ctx, te_max_tgt = _dataset_index_bounds(test_ds, te_s, window_size, "test_ds")
+        assert tr_max_tgt < va_min_ctx, f"Утечка train->val: {tr_max_tgt} >= {va_min_ctx}"
+        assert va_max_tgt < te_min_ctx, f"Утечка val->test: {va_max_tgt} >= {te_min_ctx}"
+        assert not np.shares_memory(train_ds.digits, val_ds.digits)
+        assert not np.shares_memory(val_ds.digits, test_ds.digits)
+        assert tr_min_ctx < te_max_tgt
 
     return {
         "zero_overlap_verified": True,
@@ -87,16 +127,16 @@ def verify_zero_leakage(split: ChronologicalSplit, window_size: int) -> dict[str
     }
 
 
-# Наследуемся от torch.utils.data.Dataset, чтобы PyTorch DataLoader сам умел
-# собирать батчи и распараллеливать чтение через __len__ и __getitem__.
+# Наследуемся от torch.utils.data.Dataset, чтобы DataLoader мог батчить и грузить в фоне
 class SequenceWindowDataset(Dataset):
-    """Ленивый Zero-Copy датасет: хранит только срез uint8 и вырезает окно L по индексу."""
+    """Ленивая нарезка окон поверх одного uint8-массива без материализации матрицы (N, L); конвертация в torch.long происходит на лету для каждого сэмпла."""
 
     def __init__(
         self,
         digits: np.ndarray,
         window_size: int,
         mask: np.ndarray | None = None,
+        global_offset: int = 0,
     ) -> None:
         if len(digits) <= window_size:
             raise ValueError(f"Длина среза ({len(digits)}) должна быть больше окна ({window_size})")
@@ -106,6 +146,7 @@ class SequenceWindowDataset(Dataset):
         self.digits = digits
         self.mask = mask
         self.window_size = int(window_size)
+        self.global_offset = int(global_offset)
         self.num_windows = len(digits) - self.window_size
 
     def __len__(self) -> int:
@@ -187,21 +228,27 @@ def create_dataloaders(
     batch_size: int = 512,
     num_workers: int = 4,
     pin_memory: bool = True,
+    seed: int = 42,
 ) -> dict[str, DataLoader]:
-    """Создаёт DataLoader для train/val/test. Перемешивание окон разрешено ТОЛЬКО внутри train."""
-    train_ds = SequenceWindowDataset(split.train_digits, window_size=window_size, mask=split.train_mask)
-    val_ds = SequenceWindowDataset(split.val_digits, window_size=window_size, mask=split.val_mask)
-    test_ds = SequenceWindowDataset(split.test_digits, window_size=window_size, mask=split.test_mask)
+    """Создаёт DataLoader для train/val/test. Перемешивание окон разрешено только внутри train."""
+    train_ds = SequenceWindowDataset(split.train_digits, window_size=window_size, mask=split.train_mask, global_offset=split.train_range[0])
+    val_ds = SequenceWindowDataset(split.val_digits, window_size=window_size, mask=split.val_mask, global_offset=split.val_range[0])
+    test_ds = SequenceWindowDataset(split.test_digits, window_size=window_size, mask=split.test_mask, global_offset=split.test_range[0])
+    verify_zero_leakage(split, window_size=window_size, train_ds=train_ds, val_ds=val_ds, test_ds=test_ds)
 
     persistent = num_workers > 0
+    worker_init = seed_worker if num_workers > 0 else None
+    dl_gen = make_dataloader_generator(seed)
     return {
         "train": DataLoader(
             train_ds,
             batch_size=batch_size,
-            shuffle=True,  # Разбиение уже строго хронологическое — внутри Train мешать окна можно
+            shuffle=True,  # Разбиение уже хронологическое — внутри Train мешать окна безопасно
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent,
+            worker_init_fn=worker_init,
+            generator=dl_gen,
             collate_fn=_fast_batch_collate,
         ),
         "val": DataLoader(
@@ -211,6 +258,7 @@ def create_dataloaders(
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent,
+            worker_init_fn=worker_init,
             collate_fn=_fast_batch_collate,
         ),
         "test": DataLoader(
@@ -220,6 +268,7 @@ def create_dataloaders(
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=persistent,
+            worker_init_fn=worker_init,
             collate_fn=_fast_batch_collate,
         ),
     }
@@ -227,7 +276,6 @@ def create_dataloaders(
 
 class BinaryCoordinateDataset(Dataset):
     """Координатный вход (n -> d_n) для теста BBP-оракула: 20 бит индекса n -> цифра на позиции n."""
-    # TODO: потом попробовать синусоидальные позиционные фичи вместо сырых битов индекса
 
     def __init__(
         self,

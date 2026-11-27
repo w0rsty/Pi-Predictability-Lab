@@ -1,20 +1,18 @@
-# Параметры генерации данных, сплита и обучения (seed зафиксирован для воспроизводимости)
+# Базовые параметры генерации, сплита и обучения по умолчанию.
+# Отдельные эксперименты (04–07) переопределяют epochs, patience и amp_dtype под конкретный режим.
 
 seed: 42
 
 paths:
   data_dir: "data"
   runs_dir: "runs"
-  research_log: "docs/RESEARCH_LOG.md"
 
 data:
   default_length: 1000000
-  radixes: [2, 10, 16]
   split:
     train: 0.8
     val: 0.1
     test: 0.1
-  window_sizes: [32, 64, 128]
   default_window_size: 64
 
 training:
@@ -37,8 +35,6 @@ hacked_pi:
     trigger_rem: 0
     offset: 2
     target_digit: 9
-  # Tier 3: зашумлённое правило (срабатывает с вероятностью p)
+  # Tier 3: зашумлённое правило (срабатывает с вероятностью default_prob)
   tier3:
-    base_rule: "tier2"
-    signal_probs: [0.1, 0.25, 0.5, 0.75, 1.0]
     default_prob: 0.5

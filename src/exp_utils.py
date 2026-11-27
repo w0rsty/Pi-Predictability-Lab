@@ -1,4 +1,5 @@
-# Общие хелперы для экспериментов: кэш запусков, оценка скорости и сопоставление моделей
+# Общие утилиты экспериментов: резолв путей, инференс-бенчмарк и оценка бейзлайнов
+import gc
 import json
 import time
 from pathlib import Path
@@ -6,9 +7,12 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import torch
 
 from src.baselines import PPMCompressor, _encode_markov_states
-from src.dataset import ChronologicalSplit
+from src.dataset import ChronologicalSplit, create_dataloaders
+from src.models import build_model, count_parameters
+from src.trainer import remap_legacy_state_dict
 
 CANONICAL_MODEL_MAP = {
     "MLP": "DigitMLP",
@@ -114,3 +118,103 @@ def baseline_record(ds_name: str, radix: int, model_name: str, res: dict[str, An
         "samples_per_sec": round(n_eval / max(float(res["eval_time_sec"]), 1e-4), 1),
         "source": source,
     }
+
+
+def free_gpu() -> None:
+    """Освобождает временные тензоры Python и кэш CUDA между прогонами."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+@torch.no_grad()
+def predict_and_benchmark(
+    arch: str,
+    run_dir: Path,
+    split: ChronologicalSplit,
+    radix: int,
+    window_size: int,
+    size_tier: str,
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+    amp_dtype: str = "float16",
+    seed: int = 42,
+    collect_meta: bool = False,
+) -> tuple[np.ndarray, float, dict[str, Any]]:
+    """Загружает best_model.pt, замеряет скорость инференса на тесте и возвращает маску верных ответов."""
+    ckpt_path = run_dir / "best_model.pt"
+    loaders = create_dataloaders(
+        split=split,
+        window_size=window_size,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=(device.type == "cuda"),
+        seed=seed,
+    )
+    model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier=size_tier)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    raw_sd = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
+    sd, remapped = remap_legacy_state_dict(raw_sd)
+    model.load_state_dict(sd)
+    model = model.to(device).eval()
+
+    amp_enabled = device.type == "cuda"
+    use_bf16 = amp_dtype == "bfloat16" and amp_enabled and torch.cuda.is_bf16_supported()
+    autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    test_loader = loaders["test"]
+
+    # Короткий прогрев ядра CUDA до замера throughput
+    for ctx, _, _ in test_loader:
+        with torch.amp.autocast("cuda", dtype=autocast_dtype, enabled=amp_enabled):
+            _ = model(ctx.to(device, non_blocking=True))
+        break
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    t0 = time.perf_counter()
+    chunks: list[np.ndarray] = []
+    for ctx, tgt, _ in test_loader:
+        with torch.amp.autocast("cuda", dtype=autocast_dtype, enabled=amp_enabled):
+            logits = model(ctx.to(device, non_blocking=True))
+        chunks.append((torch.argmax(logits.float(), dim=-1) == tgt.to(device, non_blocking=True)).cpu().numpy())
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+    correct_bool = np.concatenate(chunks, axis=0)
+    sps = round(float(len(correct_bool) / max(time.perf_counter() - t0, 1e-5)), 1)
+
+    meta: dict[str, Any] = {}
+    if collect_meta:
+        meta = {
+            "arch": arch,
+            "radix": int(radix),
+            "window_size": int(window_size),
+            "size_tier": size_tier,
+            "param_count": int(count_parameters(model)),
+            "best_epoch": int(ckpt.get("epoch", 0)) if isinstance(ckpt, dict) else 0,
+            "val_loss": float(ckpt.get("val_loss", float("nan"))) if isinstance(ckpt, dict) else float("nan"),
+            "ckpt_path": ckpt_path,
+            "was_remapped_legacy": remapped,
+        }
+        if arch == "transformer":
+            meta.update({
+                "d_model": int(model.d_model),
+                "n_heads": int(model.n_heads),
+                "n_layers": int(model.n_layers),
+                "token_emb": model.token_emb.weight.detach().cpu().numpy().copy(),
+            })
+        elif arch == "gru":
+            meta.update({
+                "hidden_size": int(model.hidden_size),
+                "num_layers": int(model.num_layers),
+                "emb_dim": int(model.emb_dim),
+            })
+        elif arch == "mlp":
+            meta.update({"emb_dim": int(model.emb_dim)})
+        elif arch == "cnn":
+            meta.update({"channels": int(model.channels), "head_hidden": int(model.head_hidden)})
+
+    del model, loaders
+    free_gpu()
+    return correct_bool, sps, meta

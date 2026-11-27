@@ -1,4 +1,4 @@
-# Классические бейзлайны (Uniform, цепи Маркова k=1..3, LightGBM) и векторизованный PPM-C
+# Бейзлайны: Uniform, маргинальный и контекстные Markov (k=0..3), LightGBM и суффиксный PPM-C
 import math
 import time
 from typing import Any
@@ -14,7 +14,7 @@ def compute_prediction_metrics(
     targets: np.ndarray,
     mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """Считает честные метрики: Overall Acc, Targeted Acc (по mask==1), Cross-Entropy, PPL и энтропию."""
+    """Считает метрики: Overall Acc, Targeted Acc (по mask==1), Cross-Entropy, PPL и энтропию."""
     probs_safe = np.clip(probs.astype(np.float64, copy=False), 1e-12, 1.0)
     # На всякий случай нормируем строки, чтобы сумма вероятностей была равна 1
     probs_safe = probs_safe / probs_safe.sum(axis=1, keepdims=True)
@@ -69,6 +69,55 @@ def evaluate_uniform_baseline(
     metrics["train_time_sec"] = 0.0
     metrics["eval_time_sec"] = round(time.perf_counter() - t0, 4)
     return metrics
+
+
+class MarkovK0Baseline:
+    """Нулевой порядок (k=0): эмпирическое маргинальное распределение частот цифр из Train."""
+
+    def __init__(self, radix: int, smoothing: float = 0.0) -> None:
+        self.radix = int(radix)
+        self.smoothing = float(smoothing)
+        self.counts_: np.ndarray | None = None
+        self.probs_: np.ndarray | None = None
+
+    def fit(self, train_digits: np.ndarray) -> "MarkovK0Baseline":
+        counts = np.bincount(train_digits.astype(np.int64), minlength=self.radix).astype(np.float64)
+        total = float(counts.sum())
+        self.counts_ = counts
+        denom = total + self.smoothing * self.radix
+        self.probs_ = (counts + self.smoothing) / max(denom, 1.0)
+        return self
+
+    def predict(self, n_samples: int) -> np.ndarray:
+        if self.probs_ is None:
+            raise RuntimeError("Сначала вызовите fit()")
+        top_digit = int(np.argmax(self.probs_))
+        return np.full(int(n_samples), top_digit, dtype=np.int64)
+
+    def predict_proba(self, n_samples: int) -> np.ndarray:
+        if self.probs_ is None:
+            raise RuntimeError("Сначала вызовите fit()")
+        return np.broadcast_to(self.probs_, (int(n_samples), self.radix)).copy()
+
+    def log_probs(self) -> np.ndarray:
+        if self.probs_ is None:
+            raise RuntimeError("Сначала вызовите fit()")
+        return np.log(np.clip(self.probs_, 1e-12, 1.0))
+
+    def evaluate(self, split: ChronologicalSplit, window_size: int) -> dict[str, Any]:
+        t0 = time.perf_counter()
+        self.fit(split.train_digits)
+        train_time = time.perf_counter() - t0
+
+        t1 = time.perf_counter()
+        targets = split.test_digits[window_size:]
+        mask = split.test_mask[window_size:] if split.test_mask is not None else None
+        probs = self.predict_proba(len(targets))
+        metrics = compute_prediction_metrics(probs, targets, mask)
+        metrics["model"] = "Markov_k0"
+        metrics["train_time_sec"] = round(train_time, 4)
+        metrics["eval_time_sec"] = round(time.perf_counter() - t1, 4)
+        return metrics
 
 
 def _encode_markov_states(digits: np.ndarray, order: int, radix: int) -> np.ndarray:
@@ -202,11 +251,10 @@ class PPMCompressor:
     """Суффиксный компрессор PPM-C до порядка max_order с escape-откатом и exclusion.
 
     На Base-10/Base-16 при order=8 пространство суффиксов разрежено, поэтому на шуме битрейт улетает
-    выше предела Шеннона (3.774 / 4.481 бит), зато в Base-2 (2^8=256 состояний) держит честные 1.0002 бита.
+    выше предела Шеннона (3.774 / 4.481 бит), зато в Base-2 (2^8=256 состояний) держит ровные 1.0002 бита.
     """
 
     def __init__(self, radix: int, max_order: int = 8, dense_limit: int = 200_000) -> None:
-        # max_order = 4  # на order=4 в Base-10 таблица не так раздувается, но для эталона оставил 8
         self.radix = int(radix)
         self.max_order = int(max_order)
         self.dense_limit = int(dense_limit)

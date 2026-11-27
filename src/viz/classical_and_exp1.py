@@ -105,7 +105,7 @@ def plot_exp1_test_xray(
     fig.add_hline(y=10.0, line_dash="dash", line_color="white", opacity=0.6, row=1, col=2)
     apply_lab_layout(
         fig,
-        f"Эксперимент 1 ({arch.upper()}): Рентген обнаружения скрытых правил на Test",
+        f"Эксперимент 1 ({arch.upper()}): Диагностика обнаружения скрытых правил на Test",
         height=540,
         width=1360,
         barmode="group",
@@ -236,7 +236,7 @@ def plot_arch_battle_comparison(
     archs_label = " vs ".join(a.upper() for a in present_archs)
     apply_lab_layout(
         fig,
-        f"Эксперимент 1: Битва архитектур ({archs_label}, ~250K параметров, L=64)",
+        f"Эксперимент 1: Сравнение архитектур ({archs_label}, ~250K параметров, L=64)",
         height=560,
         width=1620,
         barmode="group",
