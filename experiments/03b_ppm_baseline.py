@@ -9,7 +9,7 @@ import pandas as pd
 
 from src.baselines import fit_and_evaluate_ppm
 from src.data_generator import get_or_create_dataset, load_config, seed_everything
-from src.dataset import split_sequence_chronologically, verify_zero_leakage
+from src.dataset import SequenceWindowDataset, split_sequence_chronologically, verify_zero_leakage
 from src.evaluator import wilson_ci
 from src.trainer import create_run_dir
 from src.viz import plot_ppm_vs_neural_bits
@@ -40,7 +40,13 @@ def _evaluate_ppm_dataset(ds_name: str, config: dict[str, Any]) -> tuple[dict[st
         digits=art.digits, mask=art.mask,
         train_ratio=float(split_cfg["train"]), val_ratio=float(split_cfg["val"]), test_ratio=float(split_cfg["test"]),
     )
-    verify_zero_leakage(split, window_size=window_size)
+    verify_zero_leakage(
+        split,
+        window_size=window_size,
+        train_ds=SequenceWindowDataset(split.train_digits, window_size, split.train_mask, split.train_range[0]),
+        val_ds=SequenceWindowDataset(split.val_digits, window_size, split.val_mask, split.val_range[0]),
+        test_ds=SequenceWindowDataset(split.test_digits, window_size, split.test_mask, split.test_range[0]),
+    )
 
     metrics, pred_probs = fit_and_evaluate_ppm(split=split, radix=art.radix, window_size=window_size, max_order=8)
     targets = split.test_digits[window_size:]

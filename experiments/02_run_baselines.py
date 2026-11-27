@@ -90,8 +90,11 @@ def _evaluate_dataset_baselines(name: str, config: dict, window_size: int, seed:
         val_ratio=float(split_cfg["val"]),
         test_ratio=float(split_cfg["test"]),
     )
-    leak_info = verify_zero_leakage(split, window_size=window_size)
-    sample_ctx, sample_tgt, sample_flag = SequenceWindowDataset(split.test_digits, window_size=window_size, mask=split.test_mask)[0]
+    tr_ds = SequenceWindowDataset(split.train_digits, window_size=window_size, mask=split.train_mask, global_offset=split.train_range[0])
+    va_ds = SequenceWindowDataset(split.val_digits, window_size=window_size, mask=split.val_mask, global_offset=split.val_range[0])
+    te_ds = SequenceWindowDataset(split.test_digits, window_size=window_size, mask=split.test_mask, global_offset=split.test_range[0])
+    leak_info = verify_zero_leakage(split, window_size=window_size, train_ds=tr_ds, val_ds=va_ds, test_ds=te_ds)
+    sample_ctx, sample_tgt, sample_flag = te_ds[0]
     assert sample_ctx.shape == (window_size,) and sample_tgt.ndim == 0 and sample_flag.ndim == 0
 
     tmat = compute_empirical_transition_matrix(split.test_digits, radix=10) if art.radix == 10 else None

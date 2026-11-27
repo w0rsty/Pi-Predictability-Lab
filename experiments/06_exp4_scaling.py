@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 from src.baselines import PPMCompressor, fit_and_evaluate_ppm
 from src.data_generator import get_or_create_dataset, load_config, seed_everything
-from src.dataset import ChronologicalSplit, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
+from src.dataset import ChronologicalSplit, SequenceWindowDataset, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
 from src.evaluator import compute_binomial_z_score, compute_mcnemar_exact, evaluate_model, wilson_ci
 from src.exp_utils import CANONICAL_TO_ARCH, canonical_model_name, find_latest_csv, free_gpu, predict_and_benchmark, resolve_run_dir
 from src.models import build_model, count_parameters
@@ -156,8 +156,8 @@ def run_block_d_memorization(pi_digits: np.ndarray, summary_dir: Path, config: d
     seed_everything(seed)
     device = resolve_device(str(config["training"].get("device", "cuda")))
     split = split_sequence_chronologically(pi_digits[:10_000], mask=None, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1)
-    verify_zero_leakage(split, window_size=64)
     loaders = create_dataloaders(split=split, window_size=64, batch_size=batch_size, num_workers=2, pin_memory=True, seed=seed)
+    verify_zero_leakage(split, window_size=64, train_ds=loaders["train"].dataset, val_ds=loaders["val"].dataset, test_ds=loaders["test"].dataset)
     model = build_model("transformer", radix=10, window_size=64, size_tier="heavy", dropout=0.0).to(device)
     p_cnt = count_parameters(model)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.0)
@@ -195,13 +195,25 @@ def _run_block_b(rat97_split: ChronologicalSplit, config: dict, exp2_cache: dict
     for L in (64, 128):
         ppm_key = ("Block_B_PhaseTransition_H1", "rational_1_97", L, "tabular", "PPM_o8")
         if ppm_key not in rows_map:
-            verify_zero_leakage(rat97_split, window_size=L)
+            verify_zero_leakage(
+                rat97_split,
+                window_size=L,
+                train_ds=SequenceWindowDataset(rat97_split.train_digits, L, rat97_split.train_mask, rat97_split.train_range[0]),
+                val_ds=SequenceWindowDataset(rat97_split.val_digits, L, rat97_split.val_mask, rat97_split.val_range[0]),
+                test_ds=SequenceWindowDataset(rat97_split.test_digits, L, rat97_split.test_mask, rat97_split.test_range[0]),
+            )
             ppm_res, _ = fit_and_evaluate_ppm(rat97_split, radix=10, window_size=L, max_order=8)
             sps = round(ppm_res["num_eval_samples"] / max(float(ppm_res["eval_time_sec"]), 1e-4), 1)
             rows_map[ppm_key] = _build_metric_row("Block_B_PhaseTransition_H1", "rational_1_97", "H1", 10, L, "tabular", "PPM_o8", None, ppm_res["overall_acc"], ppm_res["cross_entropy"], ppm_res["perplexity"], ppm_res["pred_entropy"], ppm_res["num_eval_samples"], None, sps, None, None, ppm_res["train_time_sec"], "exp4_ppm_o8")
             _save_partial(rows_map, summary_dir)
     for L in (32, 64, 128):
-        verify_zero_leakage(rat97_split, window_size=L)
+        verify_zero_leakage(
+            rat97_split,
+            window_size=L,
+            train_ds=SequenceWindowDataset(rat97_split.train_digits, L, rat97_split.train_mask, rat97_split.train_range[0]),
+            val_ds=SequenceWindowDataset(rat97_split.val_digits, L, rat97_split.val_mask, rat97_split.val_range[0]),
+            test_ds=SequenceWindowDataset(rat97_split.test_digits, L, rat97_split.test_mask, rat97_split.test_range[0]),
+        )
         for arch in ("mlp", "gru", "transformer"):
             _run_or_reuse_neural("Block_B_PhaseTransition_H1", "rational_1_97", "H1", arch, "medium", L, rat97_split, 10, config, exp2_cache, rows_map, summary_dir, device, seed, 12, 3, "cosine")
 
@@ -281,7 +293,13 @@ def run_experiment_4(blocks: list[str], reuse_dir: Path | None = None, finalize:
 
     if "A" in blocks:
         for L in (32, 64, 128):
-            verify_zero_leakage(pi_split, window_size=L)
+            verify_zero_leakage(
+                pi_split,
+                window_size=L,
+                train_ds=SequenceWindowDataset(pi_split.train_digits, L, pi_split.train_mask, pi_split.train_range[0]),
+                val_ds=SequenceWindowDataset(pi_split.val_digits, L, pi_split.val_mask, pi_split.val_range[0]),
+                test_ds=SequenceWindowDataset(pi_split.test_digits, L, pi_split.test_mask, pi_split.test_range[0]),
+            )
             for arch in ("mlp", "gru", "transformer"):
                 _run_or_reuse_neural("Block_A_Window_H0", "true_pi", "H0", arch, "medium", L, pi_split, 10, config, exp2_cache, rows_map, summary_dir, device, seed, 10, 1, None)
 

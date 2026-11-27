@@ -175,6 +175,21 @@ def test_train_model_real_2_epoch_run_param_groups_and_no_restore(tmp_path) -> N
     assert len(groups) == 2
     assert groups[0]["weight_decay"] == 1e-2 and all(p.ndim >= 2 for p in groups[0]["params"])
     assert groups[1]["weight_decay"] == 0.0 and all(p.ndim < 2 for p in groups[1]["params"])
+    decay_ids = {id(p) for p in groups[0]["params"]}
+    no_decay_ids = {id(p) for p in groups[1]["params"]}
+    assert decay_ids.isdisjoint(no_decay_ids)
+    for name, p in model.named_parameters():
+        if "bias" in name or isinstance(getattr(model, "net", None), nn.Sequential):
+            if p.ndim < 2 or "bias" in name or "norm" in name:
+                assert id(p) in no_decay_ids
+    # На Transformer с LayerNorm weight/bias также строго в no_decay
+    tr_model = build_model("transformer", radix=4, window_size=8, size_tier="light", dropout=0.0)
+    tr_groups = _build_adamw_param_groups(tr_model, weight_decay=1e-2)
+    tr_no_decay = {id(p) for p in tr_groups[1]["params"]}
+    assert {id(p) for p in tr_groups[0]["params"]}.isdisjoint(tr_no_decay)
+    for mod in tr_model.modules():
+        if isinstance(mod, nn.LayerNorm):
+            assert id(mod.weight) in tr_no_decay and id(mod.bias) in tr_no_decay
 
     cfg = {
         "seed": 42,
@@ -197,18 +212,29 @@ def test_train_model_real_2_epoch_run_param_groups_and_no_restore(tmp_path) -> N
     assert hist[-1]["train_loss"] < hist[0]["train_loss"]
 
     # С enable_early_stopping=False финальная модель остаётся на последней эпохе без отката к best_model.pt
+    adv_seq = np.concatenate([
+        np.tile(np.array([0, 1, 2, 3], dtype=np.uint8), 128),  # train (80%)
+        np.tile(np.array([3, 2, 1, 0], dtype=np.uint8), 16),   # val (10%, противоположный тренд)
+        np.tile(np.array([3, 2, 1, 0], dtype=np.uint8), 16),   # test (10%)
+    ])
+    adv_split = split_sequence_chronologically(adv_seq, None, 0.8, 0.1, 0.1)
+    adv_loaders = create_dataloaders(adv_split, window_size=8, batch_size=64, num_workers=0, pin_memory=False, seed=42)
+    no_restore_model = build_model("mlp", radix=4, window_size=8, size_tier="light", dropout=0.0)
     res_no_restore = train_model(
-        model=build_model("mlp", radix=4, window_size=8, size_tier="light", dropout=0.0),
-        loaders=loaders,
+        model=no_restore_model,
+        loaders=adv_loaders,
         config=cfg,
         exp_name="unit_test_no_restore",
         radix=4,
         epochs=2,
-        learning_rate=5e-3,
+        learning_rate=5e-2,
         enable_early_stopping=False,
         show_progress=False,
     )
     assert res_no_restore["summary"]["early_stopped"] is False
+    assert res_no_restore["summary"]["best_epoch"] == 1
+    ckpt_nr = torch.load(res_no_restore["run_dir"] / "best_model.pt", map_location="cpu", weights_only=True)["model_state_dict"]
+    assert any(not torch.allclose(no_restore_model.state_dict()[k], ckpt_nr[k]) for k in ckpt_nr)
 
 
 def test_exp5_load_checkpoint_model_raw_state_dict(tmp_path) -> None:

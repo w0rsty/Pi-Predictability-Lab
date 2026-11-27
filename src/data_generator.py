@@ -178,6 +178,10 @@ def generate_csprng_digits(
     По умолчанию читает системную энтропию из os.urandom (недетерминированный поток).
     При deterministic=True строит воспроизводимый криптографический поток на базе SHAKE-256 с rejection sampling.
     """
+    if not (2 <= radix <= 256):
+        raise ValueError(f"radix должен быть в [2, 256], получено {radix}")
+    if length < 1:
+        raise ValueError(f"Длина последовательности должна быть >= 1, получено {length}")
     src_label = f"SHAKE-256 (seed={seed})" if deterministic else "os.urandom"
     _notify(progress_cb, dataset_name, 0.1, f"Читаем энтропию из {src_label} (N={length:,})")
     block_idx = 0
@@ -476,10 +480,10 @@ def apply_csprng_backdoor(
     progress_cb: ProgressCallback | None = None,
     dataset_name: str = "csprng_backdoor",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Биективная двухлаговая закладка (~4% шагов) с равномерным выходом 0..9 и нулевой ACF.
+    """Биективная двухлаговая закладка (~4% шагов) с равномерным выходом 0..9 и низкой конечной выборочной ACF (в пределах порога Бонферрони).
 
-    На триггере (x[t-24] + x[t-7]) % 10 == 0 и x[t-1] < 4 пишем (4*x[t-24] + x[t-7] + 5) % 10 = (3*a + 5) % 10:
-    так сохраняется полная равномерность (chi2 p ~ 0.96), а линейная ACF молчит.
+    На триггере (x[t-24] + x[t-7]) % 10 == 0 и x[t-1] < 4 пишем (4*x[t-24] + x[t-7] + 5) % 10:
+    так сохраняется равномерность по цифрам (chi2 p ~ 0.96), а выборочная ACF остаётся ниже порога Бонферрони.
     """
     _notify(progress_cb, dataset_name, 0.1, f"Внедряем скрытую закладку на лагах t-{lag1}, t-{lag2}")
     digits = base_digits.copy()
@@ -572,6 +576,19 @@ def _read_parent_sha256(data_dir: Path, parent_name: str) -> str | None:
         return None
 
 
+def _atomic_write_npy(path: Path, arr: np.ndarray) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    with tmp_path.open("wb") as f:
+        np.save(f, arr)
+    os.replace(tmp_path, path)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    tmp_path.write_text(text, encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
 def _try_load_cached_dataset(
     name: str,
     spec: dict[str, Any],
@@ -605,7 +622,7 @@ def _try_load_cached_dataset(
 
         digits = np.load(digits_path)
         mask = np.load(mask_path) if expects_mask else None
-        if len(digits) != target_length:
+        if len(digits) != target_length or str(digits.dtype) != str(cached_meta.get("dtype", "uint8")):
             return None
         expected_hash = cached_meta.get("hash")
         if expected_hash:
@@ -616,6 +633,24 @@ def _try_load_cached_dataset(
                     stacklevel=2,
                 )
                 return None
+        if expects_mask:
+            if mask is None or len(mask) != target_length or str(mask.dtype) != str(cached_meta.get("mask_dtype", "uint8")):
+                return None
+            if cached_meta.get("mask_count") is not None and int(mask.sum()) != int(cached_meta["mask_count"]):
+                warnings.warn(
+                    f"Несовпадение mask_count для кэша {mask_path.name}; перегенерируем датасет.",
+                    stacklevel=2,
+                )
+                return None
+            expected_mask_hash = cached_meta.get("mask_sha256")
+            if expected_mask_hash:
+                actual_mask_hash = hashlib.sha256(mask.tobytes()).hexdigest()
+                if actual_mask_hash != expected_mask_hash:
+                    warnings.warn(
+                        f"Несовпадение SHA-256 для маски {mask_path.name}; перегенерируем датасет.",
+                        stacklevel=2,
+                    )
+                    return None
         _notify(progress_cb, name, 1.0, "Загружено из кэша")
         return DatasetArtifact(
             name=name,
@@ -719,18 +754,23 @@ def get_or_create_dataset(
     assert len(digits) == target_length, f"Ожидал длину {target_length}, получил {len(digits)}"
     assert int(digits.min()) >= 0 and int(digits.max()) < int(spec["radix"]), "Цифра вышла за пределы [0, radix-1]"
 
-    np.save(digits_path, digits.astype(np.uint8, copy=False))
-    if mask is not None:
-        np.save(mask_path, mask.astype(np.uint8, copy=False))
+    digits_u8 = digits.astype(np.uint8, copy=False)
+    mask_u8 = mask.astype(np.uint8, copy=False) if mask is not None else None
+    _atomic_write_npy(digits_path, digits_u8)
+    if mask_u8 is not None:
+        _atomic_write_npy(mask_path, mask_u8)
 
     meta = {
         "name": name,
         "radix": int(spec["radix"]),
         "length": target_length,
+        "dtype": str(digits_u8.dtype),
         "spec": spec,
-        "hash": hashlib.sha256(digits.tobytes()).hexdigest(),
-        "mask_count": int(mask.sum()) if mask is not None else 0,
-        "mask_fraction": float(mask.mean()) if mask is not None else 0.0,
+        "hash": hashlib.sha256(digits_u8.tobytes()).hexdigest(),
+        "mask_dtype": str(mask_u8.dtype) if mask_u8 is not None else None,
+        "mask_sha256": hashlib.sha256(mask_u8.tobytes()).hexdigest() if mask_u8 is not None else None,
+        "mask_count": int(mask_u8.sum()) if mask_u8 is not None else 0,
+        "mask_fraction": float(mask_u8.mean()) if mask_u8 is not None else 0.0,
     }
     if spec["kind"] == "csprng_backdoor":
         parent_sha = _read_parent_sha256(data_dir, "csprng")
@@ -742,7 +782,7 @@ def get_or_create_dataset(
             meta["parent_sha256"] = parent_sha
     if "period" in spec:
         meta["period"] = int(spec["period"])
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
 
     return DatasetArtifact(
         name=name,

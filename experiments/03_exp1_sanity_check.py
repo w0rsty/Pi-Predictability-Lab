@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 
 from src.data_generator import get_or_create_dataset, load_config, seed_everything
-from src.dataset import create_dataloaders, split_sequence_chronologically, verify_zero_leakage
+from src.dataset import SequenceWindowDataset, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
 from src.evaluator import probe_gru_hidden_dynamics, probe_transformer_attention
 from src.models import build_model, count_parameters
 from src.trainer import create_run_dir, resolve_device, train_model
@@ -106,7 +106,13 @@ def _run_dataset_for_arch(
         digits=art.digits, mask=art.mask,
         train_ratio=float(split_cfg["train"]), val_ratio=float(split_cfg["val"]), test_ratio=float(split_cfg["test"]),
     )
-    verify_zero_leakage(split, window_size=window_size)
+    verify_zero_leakage(
+        split,
+        window_size=window_size,
+        train_ds=SequenceWindowDataset(split.train_digits, window_size, split.train_mask, split.train_range[0]),
+        val_ds=SequenceWindowDataset(split.val_digits, window_size, split.val_mask, split.val_range[0]),
+        test_ds=SequenceWindowDataset(split.test_digits, window_size, split.test_mask, split.test_range[0]),
+    )
 
     reused = _find_completed_run(runs_root, arch, ds_name, expected_params) if reuse_completed else None
     if reused is not None:
@@ -114,9 +120,10 @@ def _run_dataset_for_arch(
         res = reused
         ckpt_path = Path(res["summary"]["checkpoint_path"])
         ckpt_path = ckpt_path if ckpt_path.is_absolute() else ROOT_DIR / ckpt_path
-        if ckpt_path.exists():
-            model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True)["model_state_dict"])
-            model.to(device)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Чекпойнт завершённого прогона не найден: {ckpt_path}")
+        model.load_state_dict(torch.load(ckpt_path, map_location=device, weights_only=True)["model_state_dict"])
+        model.to(device)
     else:
         loaders = create_dataloaders(split=split, window_size=window_size, batch_size=int(train_cfg["batch_size"]), num_workers=int(train_cfg.get("num_workers", 4)), pin_memory=True)
         print(f"\n=== [{arch.upper()} | {size_tier}] Датасет: {ds_name} | Параметров: {expected_params:,} ===")

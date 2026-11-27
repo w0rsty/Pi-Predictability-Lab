@@ -137,7 +137,7 @@ def plot_exp5_head_ablation_heatmap(ablation_df: pd.DataFrame, summary_dir: Path
     has_fine = not ablation_df[(ablation_df["dataset"] == "champernowne") & (ablation_df["subset"] == "carry_digit")].empty
     slices = [
         ("champernowne", "carry_digit" if has_fine else "carry_over", "champernowne: перенос (199→200)"),
-        ("champernowne", "inc_digit" if has_fine else "non_carry", "champernowne: шаг +1 (123→124)"),
+        ("champernowne", "inc_digit" if has_fine else "non_carry", "champernowne: шаг +1 (123→124)" if has_fine else "champernowne: без переноса (non_carry)"),
         ("e_cf", "even_2k", "e_cf: чётные позиции 2k"),
         ("e_cf", "const_1_sep", "e_cf: маркеры (1, ;)"),
         ("rational_1_97", "all", "rational_1_97 (L=128, P=96)"),
@@ -294,7 +294,7 @@ def plot_exp5_crypto_backdoor_xray(
         rows=1,
         cols=2,
         subplot_titles=(
-            "Точность на закладке (PPM-C / LightGBM слепы vs Neural Detectors)",
+            "Точность на закладке (базовые тесты и PPM-C vs Neural Detectors)",
             "Attention Map локализует скрытые лаги (t-24, t-7) в os.urandom",
         ),
         horizontal_spacing=0.09,

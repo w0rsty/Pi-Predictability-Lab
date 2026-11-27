@@ -11,7 +11,7 @@ import torch
 
 from src.baselines import evaluate_uniform_baseline, fit_and_evaluate_lightgbm, fit_and_evaluate_markov, fit_and_evaluate_ppm
 from src.data_generator import get_or_create_dataset, load_config, seed_everything
-from src.dataset import ChronologicalSplit, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
+from src.dataset import ChronologicalSplit, SequenceWindowDataset, create_dataloaders, split_sequence_chronologically, verify_zero_leakage
 from src.evaluator import compute_binomial_z_score, compute_mcnemar_exact, wilson_ci
 from src.exp_utils import (
     CANONICAL_TO_ARCH,
@@ -53,7 +53,13 @@ def _load_and_audit_bases(config: dict[str, Any], window_size: int) -> tuple[dic
             digits=art.digits, mask=art.mask,
             train_ratio=float(split_cfg["train"]), val_ratio=float(split_cfg["val"]), test_ratio=float(split_cfg["test"]),
         )
-        verify_zero_leakage(split, window_size=window_size)
+        verify_zero_leakage(
+            split,
+            window_size=window_size,
+            train_ds=SequenceWindowDataset(split.train_digits, window_size, split.train_mask, split.train_range[0]),
+            val_ds=SequenceWindowDataset(split.val_digits, window_size, split.val_mask, split.val_range[0]),
+            test_ds=SequenceWindowDataset(split.test_digits, window_size, split.test_mask, split.test_range[0]),
+        )
         splits[ds_name] = split
         st = run_full_statistical_suite(ds_name, art.digits, radix=art.radix, max_lag=64)
         stats_full.append(st)

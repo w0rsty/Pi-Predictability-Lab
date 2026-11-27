@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from src.data_generator import get_or_create_dataset, list_available_datasets, load_config, seed_everything
 from src.stats_tests import run_full_statistical_suite
+from src.viz.theme import save_plotly_figure
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
@@ -45,9 +46,12 @@ def save_stats_plots(results: list[dict], run_dir: Path) -> tuple[Path, Path]:
             )
 
     if "true_pi" in by_name:
-        bound = by_name["true_pi"]["acf_conf_bound_95"]
-        fig.add_hline(y=bound, line_dash="dot", line_color="gray", row=1, col=2)
-        fig.add_hline(y=-bound, line_dash="dot", line_color="gray", row=1, col=2)
+        bonf_bound = by_name["true_pi"]["acf_conf_bound_bonferroni"]
+        raw_bound = by_name["true_pi"]["acf_conf_bound_95"]
+        fig.add_hline(y=bonf_bound, line_dash="dash", line_color="#F7B924", annotation_text="Bonferroni 95%", row=1, col=2)
+        fig.add_hline(y=-bonf_bound, line_dash="dash", line_color="#F7B924", row=1, col=2)
+        fig.add_hline(y=raw_bound, line_dash="dot", line_color="gray", annotation_text="raw 95%", row=1, col=2)
+        fig.add_hline(y=-raw_bound, line_dash="dot", line_color="gray", row=1, col=2)
 
     fig.update_layout(
         template="plotly_dark",
@@ -61,11 +65,7 @@ def save_stats_plots(results: list[dict], run_dir: Path) -> tuple[Path, Path]:
     fig.update_xaxes(title_text="Лаг k", row=1, col=2)
     fig.update_yaxes(title_text="Автокорреляция", row=1, col=2)
 
-    html_path = run_dir / "stats_overview.html"
-    png_path = run_dir / "stats_overview.png"
-    fig.write_html(str(html_path))
-    fig.write_image(str(png_path), scale=2)
-    return html_path, png_path
+    return save_plotly_figure(fig, run_dir, "stats_overview")
 
 
 def _to_summary_row(r: dict) -> dict:

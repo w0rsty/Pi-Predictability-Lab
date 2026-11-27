@@ -81,11 +81,17 @@ class MarkovK0Baseline:
         self.probs_: np.ndarray | None = None
 
     def fit(self, train_digits: np.ndarray) -> "MarkovK0Baseline":
+        if len(train_digits) == 0:
+            raise ValueError("train_digits не должен быть пустым")
+        if self.smoothing < 0.0:
+            raise ValueError(f"smoothing должен быть >= 0, получено {self.smoothing}")
         counts = np.bincount(train_digits.astype(np.int64), minlength=self.radix).astype(np.float64)
         total = float(counts.sum())
         self.counts_ = counts
         denom = total + self.smoothing * self.radix
-        self.probs_ = (counts + self.smoothing) / max(denom, 1.0)
+        if denom <= 0.0:
+            raise ValueError("Сумма частот для MarkovK0Baseline должна быть положительной")
+        self.probs_ = (counts + self.smoothing) / denom
         return self
 
     def predict(self, n_samples: int) -> np.ndarray:

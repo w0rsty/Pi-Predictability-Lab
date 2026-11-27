@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import plotly.graph_objects as go
+import pytest
 
 from src.baselines import MarkovK0Baseline, PPMCompressor, fit_and_evaluate_ppm
 from src.data_generator import generate_rational_digits
@@ -35,6 +36,24 @@ def test_holm_bonferroni_and_mde_and_bootstrap() -> None:
     periodic_corr = np.tile(np.array([1, 1, 0, 1, 0], dtype=np.float64), 400)
     lo, hi = block_bootstrap_accuracy_ci(periodic_corr, block_size=25, n_resamples=300, seed=42)
     assert 0.0 <= lo <= float(periodic_corr.mean()) <= hi <= 1.0
+
+    # Граничные случаи: пустой вектор и повторяющиеся p-value
+    p_empty, sig_empty = holm_bonferroni_correction([], alpha=0.05)
+    assert p_empty == [] and sig_empty == []
+    p_dup, sig_dup = holm_bonferroni_correction([0.02, 0.02, 0.02], alpha=0.05)
+    assert np.allclose(p_dup, [0.06, 0.06, 0.06])
+    assert sig_dup == [False, False, False]
+
+    with pytest.raises(ValueError, match="n_resamples"):
+        block_bootstrap_accuracy_ci(periodic_corr, block_size=10, n_resamples=0)
+    with pytest.raises(ValueError, match="alpha"):
+        block_bootstrap_accuracy_ci(periodic_corr, block_size=10, n_resamples=50, alpha=1.5)
+    with pytest.raises(ValueError, match=">= 2"):
+        autocorrelation_function(np.array([], dtype=np.uint8), max_lag=4)
+    with pytest.raises(ValueError, match="max_lag"):
+        autocorrelation_function(np.array([0, 1, 2, 3], dtype=np.uint8), max_lag=0)
+    with pytest.raises(ValueError, match="train_digits"):
+        MarkovK0Baseline(radix=10).fit(np.array([], dtype=np.uint8))
 
 
 def test_binomial_z_mcnemar_and_acf_bonferroni() -> None:

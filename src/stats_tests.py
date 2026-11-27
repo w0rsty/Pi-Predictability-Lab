@@ -72,12 +72,18 @@ def ks_uniformity_blocks(digits: np.ndarray, radix: int, alpha: float = 0.05) ->
 
 def autocorrelation_function(digits: np.ndarray, max_lag: int = 64) -> dict[str, Any]:
     """Вычисляет автокорреляцию Пирсона (ACF) для лагов 1..max_lag."""
+    if len(digits) < 2:
+        raise ValueError(f"Для расчёта ACF требуется >= 2 элементов, получено {len(digits)}")
+    if max_lag < 1:
+        raise ValueError(f"max_lag должен быть >= 1, получено {max_lag}")
+
+    eff_lag = min(int(max_lag), len(digits) - 1)
     x = digits.astype(np.float64)
     x_centered = x - np.mean(x)
     var = float(np.dot(x_centered, x_centered))
 
     n = len(x)
-    lags = list(range(1, max_lag + 1))
+    lags = list(range(1, eff_lag + 1))
     if var == 0.0:
         # Вырожденная константа (дисперсия = 0): автокорреляция не определена, отдаём нули
         acf_values = [0.0] * len(lags)
@@ -87,9 +93,9 @@ def autocorrelation_function(digits: np.ndarray, max_lag: int = 64) -> dict[str,
             for lag in lags
         ]
 
-    # Доверительный интервал 95%: сырой 1.96/sqrt(N) и с поправкой Бонферрони на max_lag тестов
+    # Доверительный интервал 95%: сырой 1.96/sqrt(N) и с поправкой Бонферрони на eff_lag тестов
     conf_bound_raw = 1.96 / math.sqrt(n)
-    conf_bound_bonferroni = float(stats.norm.ppf(1.0 - 0.05 / (2.0 * max_lag)) / math.sqrt(n))
+    conf_bound_bonferroni = float(stats.norm.ppf(1.0 - 0.05 / (2.0 * eff_lag)) / math.sqrt(n))
     abs_vals = [abs(v) for v in acf_values]
     max_idx = int(np.argmax(abs_vals))
     significant_lags_raw = [lag for lag, val in zip(lags, acf_values) if abs(val) > conf_bound_raw]

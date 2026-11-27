@@ -308,6 +308,13 @@ def block_bootstrap_accuracy_ci(
     alpha: float = 0.05,
 ) -> tuple[float, float]:
     """Блочный бутстрэп ДИ для точности на зависимых рядах (фиксированный блок block_size)."""
+    if n_resamples < 1:
+        raise ValueError(f"n_resamples должен быть >= 1, получено {n_resamples}")
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha должен быть строго в (0, 1), получено {alpha}")
+    if block_size < 1:
+        raise ValueError(f"block_size должен быть >= 1, получено {block_size}")
+
     arr = np.asarray(correct_mask, dtype=np.float64)
     n = len(arr)
     if n == 0:

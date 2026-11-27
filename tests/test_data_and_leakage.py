@@ -98,6 +98,19 @@ def test_verify_zero_leakage_positive_and_negative() -> None:
             test_ds=loaders["test"].dataset,
         )
 
+    # Подмена содержимого val_ds.digits при валидном global_offset тоже должна ловиться
+    tampered_val_digits = split.val_digits.copy()
+    tampered_val_digits[0] = np.uint8((int(tampered_val_digits[0]) + 1) % 10)
+    tampered_val_ds = SequenceWindowDataset(tampered_val_digits, window_size=window_size, global_offset=split.val_range[0])
+    with pytest.raises(AssertionError):
+        verify_zero_leakage(
+            split,
+            window_size=window_size,
+            train_ds=loaders["train"].dataset,
+            val_ds=tampered_val_ds,
+            test_ds=loaders["test"].dataset,
+        )
+
 
 def test_mpmath_global_state_isolation() -> None:
     orig_dps, orig_prec = mp.mp.dps, mp.mp.prec
@@ -117,6 +130,13 @@ def test_mpmath_global_state_isolation() -> None:
 
 
 def test_deterministic_csprng_and_cache_integrity(tmp_path) -> None:
+    with pytest.raises(ValueError, match="radix"):
+        generate_csprng_digits(16, radix=300)
+    with pytest.raises(ValueError, match="radix"):
+        generate_csprng_digits(16, radix=0)
+    with pytest.raises(ValueError, match="Длина"):
+        generate_csprng_digits(0, radix=10)
+
     s1 = generate_csprng_digits(4096, radix=10, deterministic=True, seed=123)
     s2 = generate_csprng_digits(4096, radix=10, deterministic=True, seed=123)
     s3 = generate_csprng_digits(4096, radix=10, deterministic=True, seed=124)
@@ -147,6 +167,19 @@ def test_deterministic_csprng_and_cache_integrity(tmp_path) -> None:
         reloaded = get_or_create_dataset("csprng_backdoor", config=cfg, length=2000)
     assert reloaded.from_cache is False
     assert np.array_equal(reloaded.digits, art_bd.digits)
+
+    # Порча байта в mask.npy (даже без изменения mask_count) должна ловиться по mask_sha256 и вызывать перегенерацию
+    assert reloaded.mask is not None and reloaded.mask_path is not None
+    corrupted_mask = reloaded.mask.copy()
+    zero_idx = int(np.flatnonzero(corrupted_mask == 0)[0])
+    one_idx = int(np.flatnonzero(corrupted_mask == 1)[0])
+    corrupted_mask[zero_idx] = 1
+    corrupted_mask[one_idx] = 0
+    np.save(reloaded.mask_path, corrupted_mask)
+    with pytest.warns(UserWarning, match="SHA-256 для маски"):
+        reloaded_mask = get_or_create_dataset("csprng_backdoor", config=cfg, length=2000)
+    assert reloaded_mask.from_cache is False
+    assert np.array_equal(reloaded_mask.mask, reloaded.mask)
 
     # Смена родительского csprng должна автоматически инвалидировать кэш csprng_backdoor
     art_cs_new = get_or_create_dataset("csprng", config=cfg, length=2000, force_regenerate=True)

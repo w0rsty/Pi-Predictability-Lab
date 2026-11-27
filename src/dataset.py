@@ -59,7 +59,14 @@ def split_sequence_chronologically(
     )
 
 
-def _dataset_index_bounds(ds: "SequenceWindowDataset", expected_offset: int, expected_window: int, name: str) -> tuple[int, int]:
+def _dataset_index_bounds(
+    ds: "SequenceWindowDataset",
+    expected_digits: np.ndarray,
+    expected_mask: np.ndarray | None,
+    expected_offset: int,
+    expected_window: int,
+    name: str,
+) -> tuple[int, int]:
     if ds.window_size != expected_window:
         raise AssertionError(f"{name}: window_size {ds.window_size} != {expected_window}")
     if len(ds) <= 0:
@@ -67,6 +74,13 @@ def _dataset_index_bounds(ds: "SequenceWindowDataset", expected_offset: int, exp
     offset = int(ds.global_offset)
     if offset != expected_offset:
         raise AssertionError(f"{name}: global_offset {offset} != {expected_offset}")
+    if len(ds.digits) != len(expected_digits) or not np.array_equal(ds.digits, expected_digits):
+        raise AssertionError(f"{name}: содержимое ds.digits не совпадает со срезом ChronologicalSplit")
+    if expected_mask is not None:
+        if ds.mask is None or len(ds.mask) != len(expected_mask) or not np.array_equal(ds.mask, expected_mask):
+            raise AssertionError(f"{name}: содержимое ds.mask не совпадает со срезом ChronologicalSplit")
+    elif ds.mask is not None:
+        raise AssertionError(f"{name}: передана маска, хотя в split она отсутствует")
     min_ctx = offset
     max_tgt = offset + (len(ds) - 1) + ds.window_size
     if max_tgt != offset + len(ds.digits) - 1:
@@ -87,7 +101,7 @@ def verify_zero_leakage(
     val_ds: "SequenceWindowDataset | None" = None,
     test_ds: "SequenceWindowDataset | None" = None,
 ) -> dict[str, Any]:
-    """Проверяет отсутствие пересечения глобальных индексов и памяти между Train, Val и Test."""
+    """Проверяет отсутствие пересечения глобальных индексов, памяти и содержимого между Train, Val и Test."""
     tr_s, tr_e = split.train_range
     va_s, va_e = split.val_range
     te_s, te_e = split.test_range
@@ -105,14 +119,17 @@ def verify_zero_leakage(
     assert not np.shares_memory(split.val_digits, split.test_digits)
     assert not np.shares_memory(split.train_digits, split.test_digits)
 
-    if train_ds is not None and val_ds is not None and test_ds is not None:
-        tr_min_ctx, tr_max_tgt = _dataset_index_bounds(train_ds, tr_s, window_size, "train_ds")
-        va_min_ctx, va_max_tgt = _dataset_index_bounds(val_ds, va_s, window_size, "val_ds")
-        te_min_ctx, te_max_tgt = _dataset_index_bounds(test_ds, te_s, window_size, "test_ds")
+    if any(x is not None for x in (train_ds, val_ds, test_ds)):
+        if train_ds is None or val_ds is None or test_ds is None:
+            raise ValueError("Нужно передать все три объекта (train_ds, val_ds, test_ds) либо ни одного")
+        tr_min_ctx, tr_max_tgt = _dataset_index_bounds(train_ds, split.train_digits, split.train_mask, tr_s, window_size, "train_ds")
+        va_min_ctx, va_max_tgt = _dataset_index_bounds(val_ds, split.val_digits, split.val_mask, va_s, window_size, "val_ds")
+        te_min_ctx, te_max_tgt = _dataset_index_bounds(test_ds, split.test_digits, split.test_mask, te_s, window_size, "test_ds")
         assert tr_max_tgt < va_min_ctx, f"Утечка train->val: {tr_max_tgt} >= {va_min_ctx}"
         assert va_max_tgt < te_min_ctx, f"Утечка val->test: {va_max_tgt} >= {te_min_ctx}"
         assert not np.shares_memory(train_ds.digits, val_ds.digits)
         assert not np.shares_memory(val_ds.digits, test_ds.digits)
+        assert not np.shares_memory(train_ds.digits, test_ds.digits)
         assert tr_min_ctx < te_max_tgt
 
     return {

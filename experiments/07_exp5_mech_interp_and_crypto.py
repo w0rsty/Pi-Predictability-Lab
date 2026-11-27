@@ -117,30 +117,36 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom) if denom >= 1e-12 else 0.0
 
 
-def _embedding_adj_perm_test(emb_d: np.ndarray, n_perms: int = 10_000, seed: int = 42) -> tuple[float, float]:
-    """Перестановочный тест разности (mean_adj_cos - mean_nonadj_cos) по меткам 0..9."""
+def _embedding_adj_perm_test(emb_d: np.ndarray, n_perms: int = 10_000, seed: int = 42) -> dict[str, float]:
+    """Односторонний перестановочный тест (diff >= obs_diff) для adjacent_cosine_0_to_8 и mod-10."""
     norms = np.linalg.norm(emb_d, axis=1, keepdims=True)
     unit = emb_d / np.maximum(norms, 1e-12)
     cos_mat = unit @ unit.T
-    adj_pairs = [(d, (d + 1) % 10) for d in range(10)]
-    nonadj_pairs = [(i, j) for i in range(10) for j in range(i + 1, 10) if (j - i) not in (1, 9)]
-    adj_arr = np.array(adj_pairs, dtype=np.int64)
-    nonadj_arr = np.array(nonadj_pairs, dtype=np.int64)
 
-    obs_adj = float(cos_mat[adj_arr[:, 0], adj_arr[:, 1]].mean())
-    obs_non = float(cos_mat[nonadj_arr[:, 0], nonadj_arr[:, 1]].mean())
-    obs_diff = obs_adj - obs_non
+    lin_adj = np.array([(d, d + 1) for d in range(9)], dtype=np.int64)
+    lin_other = np.array([(i, j) for i in range(10) for j in range(i + 2, 10)], dtype=np.int64)
+    mod_adj = np.array([(d, (d + 1) % 10) for d in range(10)], dtype=np.int64)
+    mod_nonadj = np.array([(i, j) for i in range(10) for j in range(i + 1, 10) if (j - i) not in (1, 9)], dtype=np.int64)
+
+    obs_lin = float(cos_mat[lin_adj[:, 0], lin_adj[:, 1]].mean() - cos_mat[lin_other[:, 0], lin_other[:, 1]].mean())
+    obs_mod = float(cos_mat[mod_adj[:, 0], mod_adj[:, 1]].mean() - cos_mat[mod_nonadj[:, 0], mod_nonadj[:, 1]].mean())
 
     rng = np.random.default_rng(seed)
-    ge_count = 0
+    ge_lin, ge_mod = 0, 0
     for _ in range(n_perms):
         perm = rng.permutation(10)
-        p_adj = perm[adj_arr]
-        p_non = perm[nonadj_arr]
-        diff = float(cos_mat[p_adj[:, 0], p_adj[:, 1]].mean() - cos_mat[p_non[:, 0], p_non[:, 1]].mean())
-        if diff >= obs_diff:
-            ge_count += 1
-    return obs_diff, float((1 + ge_count) / (n_perms + 1))
+        p_la, p_lo = perm[lin_adj], perm[lin_other]
+        p_ma, p_mn = perm[mod_adj], perm[mod_nonadj]
+        if float(cos_mat[p_la[:, 0], p_la[:, 1]].mean() - cos_mat[p_lo[:, 0], p_lo[:, 1]].mean()) >= obs_lin:
+            ge_lin += 1
+        if float(cos_mat[p_ma[:, 0], p_ma[:, 1]].mean() - cos_mat[p_mn[:, 0], p_mn[:, 1]].mean()) >= obs_mod:
+            ge_mod += 1
+    return {
+        "adj_0_to_8_minus_other": obs_lin,
+        "adj_0_to_8_perm_p": float((1 + ge_lin) / (n_perms + 1)),
+        "adj_mod10_minus_nonadj": obs_mod,
+        "adj_mod10_perm_p": float((1 + ge_mod) / (n_perms + 1)),
+    }
 
 
 def _analyze_embeddings(checkpoints: dict[str, dict[str, Any]], seed: int = 42) -> dict[str, Any]:
@@ -162,7 +168,7 @@ def _analyze_embeddings(checkpoints: dict[str, dict[str, Any]], seed: int = 42) 
         adj_0_8 = [_cosine(emb_d[d], emb_d[d + 1]) for d in range(9)]
         cos_9_0 = _cosine(emb_d[9], emb_d[0])
         non_adj = [_cosine(emb_d[i], emb_d[j]) for i in range(10) for j in range(i + 1, 10) if (j - i) not in (1, 9)]
-        adj_diff, adj_perm_p = _embedding_adj_perm_test(emb_d, n_perms=10_000, seed=seed)
+        perm_res = _embedding_adj_perm_test(emb_d, n_perms=10_000, seed=seed)
 
         pc2d = coords_3d[:, :2]
         centered = pc2d - pc2d.mean(axis=0, keepdims=True)
@@ -182,8 +188,12 @@ def _analyze_embeddings(checkpoints: dict[str, dict[str, Any]], seed: int = 42) 
             "cosine_9_to_0": round(float(cos_9_0), 6),
             "adjacent_cosine_mod10_mean": round(float(np.mean(adj_0_8 + [cos_9_0])), 6),
             "nonadjacent_cosine_mean": round(float(np.mean(non_adj)), 6),
-            "adj_minus_nonadj_cos": round(adj_diff, 6),
-            "adj_perm_p_value": round(adj_perm_p, 6),
+            "adj_0_to_8_minus_other": round(perm_res["adj_0_to_8_minus_other"], 6),
+            "adj_0_to_8_perm_p": round(perm_res["adj_0_to_8_perm_p"], 6),
+            "adj_mod10_minus_nonadj": round(perm_res["adj_mod10_minus_nonadj"], 6),
+            "adj_mod10_perm_p": round(perm_res["adj_mod10_perm_p"], 6),
+            "perm_test_one_sided": True,
+            "perm_test_resamples": 10_000,
             "cyclic_order_consistency_10": round(max(int(np.sum(step_d > 0)), int(np.sum(step_d < 0))) / 10.0, 4),
             "arc_order_consistency_9": round(max(int(np.sum(arc_d > 0)), int(np.sum(arc_d < 0))) / 9.0, 4),
             "angles_rad": [round(float(a), 4) for a in angles],
@@ -225,7 +235,14 @@ def _ablate_dataset_heads(ds_name: str, radix: int, win_size: int, size_tier: st
     split_cfg = config["data"]["split"]
     art = get_or_create_dataset(ds_name, config=config, length=req_len)
     split = split_sequence_chronologically(art.digits, art.mask, float(split_cfg["train"]), float(split_cfg["val"]), float(split_cfg["test"]))
-    loader = DataLoader(SequenceWindowDataset(split.test_digits, window_size=win_size, mask=split.test_mask), batch_size=512 if win_size >= 128 else 1024, shuffle=False, num_workers=int(config["training"].get("num_workers", 4)), pin_memory=(device.type == "cuda"), collate_fn=_fast_batch_collate)
+    verify_zero_leakage(
+        split,
+        window_size=win_size,
+        train_ds=SequenceWindowDataset(split.train_digits, win_size, split.train_mask, split.train_range[0]),
+        val_ds=SequenceWindowDataset(split.val_digits, win_size, split.val_mask, split.val_range[0]),
+        test_ds=SequenceWindowDataset(split.test_digits, win_size, split.test_mask, split.test_range[0]),
+    )
+    loader = DataLoader(SequenceWindowDataset(split.test_digits, window_size=win_size, mask=split.test_mask, global_offset=split.test_range[0]), batch_size=512 if win_size >= 128 else 1024, shuffle=False, num_workers=int(config["training"].get("num_workers", 4)), pin_memory=(device.type == "cuda"), collate_fn=_fast_batch_collate)
 
     idx = np.arange(split.test_range[0] + win_size, split.test_range[0] + len(split.test_digits))
     subsets = {"all": np.ones(len(idx), dtype=bool)}
@@ -254,15 +271,8 @@ def _ablate_dataset_heads(ds_name: str, radix: int, win_size: int, size_tier: st
                 "layer": int(l_idx), "head": int(h_idx), "base_acc": round(b_acc, 6), "ablated_acc": round(a_acc, 6),
                 "delta_acc_pp": round(d_acc, 4), "base_bits": round(b_bits, 6), "ablated_bits": round(a_bits, 6),
                 "delta_bits": round(d_bits, 6), "mcnemar_p": mc["p_value_str"], "mcnemar_p_raw": float(mc["p_value"]),
-                "mcnemar_sig_0_05": mc["significant_0_05"], "mcnemar_p_holm": float(mc["p_value"]),
-                "mcnemar_sig_holm": bool(mc["significant_0_05"]), "head_role": "redundant",
+                "mcnemar_log10_p": float(mc["log10_p_value"]), "mcnemar_sig_0_05": bool(mc["significant_0_05"]),
             })
-
-    p_adj, sig_flags = holm_bonferroni_correction([r["mcnemar_p_raw"] for r in rows], alpha=0.05)
-    for row, pa, sig in zip(rows, p_adj, sig_flags):
-        row["mcnemar_p_holm"] = round(pa, 8) if pa >= 1e-8 else pa
-        row["mcnemar_sig_holm"] = bool(sig)
-        row["head_role"] = _classify_head_role(ds_name, str(row["subset"]), bool(sig), float(row["delta_acc_pp"]), float(row["delta_bits"]))
 
     del model
     free_gpu()
@@ -273,7 +283,7 @@ def _run_causal_head_ablation(config: dict[str, Any], checkpoints: dict[str, dic
     rows: list[dict[str, Any]] = []
     for ds_name, radix, win_size, size_tier, req_len in (("champernowne", 10, 64, "medium", None), ("e_cf", 11, 64, "medium", None), ("rational_1_97", 10, 128, "medium", 1_000_050), ("true_pi", 10, 64, "medium", None)):
         rows.extend(_ablate_dataset_heads(ds_name, radix, win_size, size_tier, req_len, checkpoints[ds_name]["path"], config, device))
-    # Глобальная поправка Холма — Бонферрони по всей матрице абляции (все датасеты и срезы)
+    # Единая глобальная поправка Холма — Бонферрони по всей матрице абляции (все датасеты и срезы)
     p_adj, sig_flags = holm_bonferroni_correction([r["mcnemar_p_raw"] for r in rows], alpha=0.05)
     for row, pa, sig in zip(rows, p_adj, sig_flags):
         row["mcnemar_p_holm"] = round(pa, 8) if pa >= 1e-8 else pa
@@ -456,13 +466,93 @@ def _collect_eval_preds_and_attn(model: torch.nn.Module, test_digits: np.ndarray
     return corr_vec, _summarize_attn_lag_profile(trig_sum, nontrig_sum, trig_n, nontrig_n, window_size)
 
 
+@torch.no_grad()
+def _eval_canonical_loader(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    amp_dtype: str = "float16",
+    extract_attn: bool = False,
+    window_size: int = 64,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any] | None]:
+    """Единый канонический прогон test_loader: метрики и McNemar считаются строго по одному массиву."""
+    model.eval()
+    amp_enabled = device.type == "cuda"
+    use_bf16 = amp_dtype == "bfloat16" and amp_enabled and torch.cuda.is_bf16_supported()
+    autocast_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    corr_chunks, nll_chunks = [], []
+    trig_sum, nontrig_sum, trig_n, nontrig_n, max_collect = None, None, 0, 0, 2_000
+
+    for contexts, targets, mask_flags in loader:
+        contexts = contexts.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        with torch.amp.autocast("cuda", dtype=autocast_dtype, enabled=amp_enabled):
+            logits = model(contexts)
+        logits_f32 = logits.float()
+        corr_chunks.append((torch.argmax(logits_f32, dim=-1) == targets).cpu().numpy())
+        nll_chunks.append(F.nll_loss(F.log_softmax(logits_f32, dim=-1), targets, reduction="none").cpu().numpy())
+
+        if extract_attn and (trig_n < max_collect or nontrig_n < max_collect):
+            m_np = mask_flags.numpy() == 1
+            if (np.any(m_np) and trig_n < max_collect) or (np.any(~m_np) and nontrig_n < max_collect):
+                _, attn = model(contexts, return_attn=True)
+                last_q = attn[:, :, :, -1, :].float().cpu().numpy()
+                if np.any(m_np) and trig_n < max_collect:
+                    take = last_q[m_np][: max_collect - trig_n]
+                    trig_sum = take.sum(axis=0) if trig_sum is None else trig_sum + take.sum(axis=0)
+                    trig_n += len(take)
+                if np.any(~m_np) and nontrig_n < max_collect:
+                    take = last_q[~m_np][: max_collect - nontrig_n]
+                    nontrig_sum = take.sum(axis=0) if nontrig_sum is None else nontrig_sum + take.sum(axis=0)
+                    nontrig_n += len(take)
+
+    corr_vec = np.concatenate(corr_chunks)
+    nll_vec = np.concatenate(nll_chunks)
+    if not extract_attn or trig_sum is None or nontrig_sum is None:
+        return corr_vec, nll_vec, None
+    return corr_vec, nll_vec, _summarize_attn_lag_profile(trig_sum, nontrig_sum, trig_n, nontrig_n, window_size)
+
+
+def _ablate_backdoor_heads(
+    model: DigitTransformer,
+    loader: DataLoader,
+    mask_bool: np.ndarray,
+    device: torch.device,
+) -> list[dict[str, Any]]:
+    """По-головая нулевая абляция на csprng_backdoor (all и targeted mask==1) с поправкой Холма."""
+    base_corr, base_nll = _eval_preds_and_nll(model, loader, device=device)
+    subsets = {"all": np.ones(len(mask_bool), dtype=bool), "targeted": mask_bool}
+    base_stats = {s: (float(np.mean(base_corr[m])), float(np.mean(base_nll[m]) / math.log(2.0))) for s, m in subsets.items()}
+    rows: list[dict[str, Any]] = []
+    for l_idx in range(model.n_layers):
+        for h_idx in range(model.n_heads):
+            abl_corr, abl_nll = _eval_preds_and_nll(model, loader, device=device, ablate_heads=[(l_idx, h_idx)])
+            for sub_name, sub_mask in subsets.items():
+                b_acc, b_bits = base_stats[sub_name]
+                a_acc, a_bits = float(np.mean(abl_corr[sub_mask])), float(np.mean(abl_nll[sub_mask]) / math.log(2.0))
+                mc = mcnemar_test(base_corr[sub_mask], abl_corr[sub_mask])
+                rows.append({
+                    "dataset": "csprng_backdoor", "subset": sub_name, "n_subset": int(np.sum(sub_mask)),
+                    "layer": int(l_idx), "head": int(h_idx),
+                    "base_acc": round(b_acc, 6), "ablated_acc": round(a_acc, 6),
+                    "delta_acc_pp": round((a_acc - b_acc) * 100.0, 4),
+                    "delta_bits": round(a_bits - b_bits, 6),
+                    "mcnemar_p": mc["p_value_str"], "mcnemar_p_raw": float(mc["p_value"]),
+                    "mcnemar_log10_p": float(mc["log10_p_value"]), "mcnemar_sig_0_05": bool(mc["significant_0_05"]),
+                })
+    p_adj, sig_flags = holm_bonferroni_correction([r["mcnemar_p_raw"] for r in rows], alpha=0.05)
+    for row, pa, sig in zip(rows, p_adj, sig_flags):
+        row["mcnemar_p_holm"] = round(pa, 8) if pa >= 1e-8 else pa
+        row["mcnemar_sig_holm"] = bool(sig)
+    return rows
+
+
 def _load_or_train_submodel(arch: str, prefix: str, ds_name: str, radix: int, window_size: int, loaders: dict[str, DataLoader], config: dict[str, Any], device: torch.device, reuse_checkpoints: bool) -> tuple[torch.nn.Module, dict[str, Any]]:
     runs_root = _resolve_runs_root(config)
     existing = _find_latest_dir(runs_root, f"{prefix}_{arch}_{ds_name}_") if reuse_checkpoints else None
     if existing is not None and (existing / "best_model.pt").exists():
         best_m = _load_checkpoint_model(arch, existing / "best_model.pt", radix, window_size, "medium", device)
-        tm = evaluate_model(best_m, loaders["test"], device=device, radix=radix, use_amp=bool(config["training"].get("use_amp", True)))
-        return best_m, {"test_metrics": tm, "summary": {"param_count": count_parameters(best_m), "checkpoint_path": str(existing / "best_model.pt"), "run_dir": str(existing)}}
+        return best_m, {"summary": {"param_count": count_parameters(best_m), "checkpoint_path": str(existing / "best_model.pt"), "run_dir": str(existing)}}
 
     seed_everything(int(config.get("seed", 42)))
     model = build_model(arch=arch, radix=radix, window_size=window_size, size_tier="medium")
@@ -472,16 +562,22 @@ def _load_or_train_submodel(arch: str, prefix: str, ds_name: str, radix: int, wi
     return best_m, res
 
 
-def _format_backdoor_row(m_name: str, params_count: int | None, acc: float, ce: float, n_eval: int, n_mask: int, tgt_acc: float | None, tgt_ce: float | None, clean_acc: Any, source: str) -> dict[str, Any]:
-    ci_lo, ci_hi = wilson_ci(int(round(acc * n_eval)), n_eval)
+def _format_backdoor_row(
+    m_name: str, params_count: int | None, acc: float, ce: float, n_eval: int, n_mask: int,
+    tgt_acc: float | None, tgt_ce: float | None, clean_acc: Any, source: str,
+    overall_correct: int | None = None, targeted_correct: int | None = None,
+) -> dict[str, Any]:
+    ov_k = int(overall_correct) if overall_correct is not None else int(round(acc * n_eval))
     t_val = float(tgt_acc or 0.0)
-    t_lo, t_hi = wilson_ci(int(round(t_val * n_mask)), n_mask)
-    br = compute_bitrate_metrics(ce, radix=10, correct=int(round(acc * n_eval)), total=n_eval)
+    t_k = int(targeted_correct) if targeted_correct is not None else int(round(t_val * n_mask))
+    ci_lo, ci_hi = wilson_ci(ov_k, n_eval)
+    t_lo, t_hi = wilson_ci(t_k, n_mask)
+    br = compute_bitrate_metrics(ce, radix=10, correct=ov_k, total=n_eval)
     tgt_z = compute_binomial_z_score(t_val, radix=10, n_samples=n_mask, ci_low=t_lo, ci_high=t_hi)
     return {
         "module": "Module2_CryptoBackdoor", "dataset": "csprng_backdoor", "radix": 10, "model": m_name, "params_count": params_count,
-        "overall_acc": round(acc, 6), "wilson_ci_low": ci_lo, "wilson_ci_high": ci_hi,
-        "targeted_acc": round(t_val, 6), "targeted_ci_low": t_lo, "targeted_ci_high": t_hi,
+        "overall_acc": round(acc, 6), "overall_correct": ov_k, "wilson_ci_low": ci_lo, "wilson_ci_high": ci_hi,
+        "targeted_acc": round(t_val, 6), "targeted_correct": t_k, "targeted_ci_low": t_lo, "targeted_ci_high": t_hi,
         "cross_entropy_nats": round(ce, 6), "targeted_ce_nats": round(float(tgt_ce), 6),
         "bits_per_symbol": round(br["bits_per_symbol"], 6), "shannon_limit_bits": round(br["shannon_limit_bits"], 6),
         "z_score": br["z_score"], "overall_z_score": br["z_score"], "z_p_value": br["z_p_value"],
@@ -500,7 +596,6 @@ def run_module2_crypto_auditor(config: dict[str, Any], summary_dir: Path, device
     clean_stats = run_classical_tests("csprng", clean_art.digits, 10)
     bd_stats = run_classical_tests("csprng_backdoor", bd_art.digits, 10)
     bd_split = split_sequence_chronologically(bd_art.digits, bd_art.mask, float(split_cfg["train"]), float(split_cfg["val"]), float(split_cfg["test"]))
-    verify_zero_leakage(bd_split, window_size=win_size)
 
     uni_m = evaluate_uniform_baseline(bd_split, radix=10, window_size=win_size)
     ppm_m, ppm_probs = fit_and_evaluate_ppm(bd_split, radix=10, window_size=win_size, max_order=8)
@@ -510,27 +605,37 @@ def run_module2_crypto_auditor(config: dict[str, Any], summary_dir: Path, device
     uni_corr = test_targets == 0
 
     loaders = create_dataloaders(split=bd_split, window_size=win_size, batch_size=512, num_workers=int(config["training"].get("num_workers", 4)), pin_memory=(device.type == "cuda"), seed=seed)
-    neural_runs, neural_corr, attn_profile = {}, {}, None
-    ckpt_dir = summary_dir / "checkpoints"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    for arch, m_name in (("gru", "DigitGRU"), ("transformer", "DigitTransformer")):
-        best_model, res = _load_or_train_submodel(arch, "exp5", "csprng_backdoor", 10, win_size, loaders, config, device, reuse_checkpoints)
-        neural_runs[m_name] = res
-        neural_corr[m_name], attn_res = _collect_eval_preds_and_attn(best_model, bd_split.test_digits, bd_split.test_mask, win_size, device, extract_attn=(arch == "transformer"))
-        if arch == "transformer":
-            attn_profile = attn_res
-            shutil.copy2(res["summary"]["checkpoint_path"], ckpt_dir / "transformer_csprng_backdoor.pt")
-        del best_model
-        free_gpu()
+    verify_zero_leakage(bd_split, window_size=win_size, train_ds=loaders["train"].dataset, val_ds=loaders["val"].dataset, test_ds=loaders["test"].dataset)
 
     exp2_dir = _find_latest_dir(_resolve_runs_root(config), "exp2_constants_final_")
     clean_csv = (exp2_dir / "metrics.csv") if exp2_dir and (exp2_dir / "metrics.csv").exists() else (ROOT_DIR / "results" / "04_exp2_constants" / "metrics.csv")
     clean_rows = {str(r["model"]): r.to_dict() for _, r in pd.read_csv(clean_csv).iterrows() if r["dataset"] == "csprng"} if clean_csv.exists() else {}
 
     m2_rows = [_format_backdoor_row(m_name, None, d["overall_acc"], d["cross_entropy"], int(d["num_eval_samples"]), int(d["num_masked_samples"]), d["targeted_acc"], d["targeted_ce"], clean_rows.get(m_name, {}).get("test_acc"), "exp5_module2") for m_name, d in (("Uniform", uni_m), ("PPM_o8", ppm_m))]
-    for m_name, res in neural_runs.items():
-        tm, s = res["test_metrics"], res["summary"]
-        m2_rows.append(_format_backdoor_row(m_name, s["param_count"], tm["overall_acc"], tm["cross_entropy"], int(tm["num_eval_samples"]), int(tm["num_masked_samples"]), tm["targeted_acc"], tm["targeted_ce"], clean_rows.get(m_name, {}).get("test_acc"), str(s["run_dir"])))
+    neural_corr, attn_profile, bd_ablation = {}, None, []
+    ckpt_dir = summary_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    for arch, m_name in (("gru", "DigitGRU"), ("transformer", "DigitTransformer")):
+        best_model, res = _load_or_train_submodel(arch, "exp5", "csprng_backdoor", 10, win_size, loaders, config, device, reuse_checkpoints)
+        corr_vec, nll_vec, attn_res = _eval_canonical_loader(
+            best_model, loaders["test"], device=device, amp_dtype="float16", extract_attn=(arch == "transformer"), window_size=win_size
+        )
+        neural_corr[m_name] = corr_vec
+        s = res["summary"]
+        m2_rows.append(_format_backdoor_row(
+            m_name, s["param_count"], float(corr_vec.mean()), float(nll_vec.mean()),
+            len(corr_vec), int(np.sum(mask_bool)), float(corr_vec[mask_bool].mean()), float(nll_vec[mask_bool].mean()),
+            clean_rows.get(m_name, {}).get("test_acc"), str(s["run_dir"]),
+            overall_correct=int(corr_vec.sum()), targeted_correct=int(corr_vec[mask_bool].sum()),
+        ))
+        if arch == "transformer":
+            attn_profile = attn_res
+            shutil.copy2(s["checkpoint_path"], ckpt_dir / "transformer_csprng_backdoor.pt")
+            assert isinstance(best_model, DigitTransformer)
+            bd_ablation = _ablate_backdoor_heads(best_model, loaders["test"], mask_bool, device)
+            pd.DataFrame(bd_ablation).to_csv(summary_dir / "head_ablation_backdoor.csv", index=False)
+        del best_model
+        free_gpu()
 
     mc_audit = {
         "Transformer_vs_Uniform_all": mcnemar_test(neural_corr["DigitTransformer"], uni_corr),
@@ -545,14 +650,15 @@ def run_module2_crypto_auditor(config: dict[str, Any], summary_dir: Path, device
         "clean_classical_stats": {"chi2_p_value": clean_stats["chi2_p_value"], "ks_p_value": clean_stats["ks_p_value"], "acf_max_abs": clean_stats["acf_max_abs"], "lzma_bits_per_digit": clean_stats["lzma_bits_per_digit"]},
         "models": [{"label": r["model"], "overall_acc": r["overall_acc"], "targeted_acc": r["targeted_acc"]} for r in m2_rows],
     }
-    return {"rows": m2_rows, "mcnemar": mc_audit, "audit_plot_data": audit_plot_data, "attn_profile": attn_profile}
+    return {"rows": m2_rows, "mcnemar": mc_audit, "audit_plot_data": audit_plot_data, "attn_profile": attn_profile, "backdoor_head_ablation": bd_ablation}
 
 
-def _oracle_row(ds_name: str, radix: int, model_name: str, params_count: int | None, br: dict[str, Any], ce: float, n_test: int, source: str) -> dict[str, Any]:
+def _oracle_row(ds_name: str, radix: int, model_name: str, params_count: int | None, br: dict[str, Any], ce: float, n_test: int, source: str, overall_correct: int | None = None) -> dict[str, Any]:
+    ov_k = int(overall_correct) if overall_correct is not None else int(round(br["acc"] * n_test))
     return {
         "module": "Module3_BBP_Oracle", "dataset": ds_name, "radix": radix, "model": model_name, "params_count": params_count,
-        "overall_acc": round(br["acc"], 6), "wilson_ci_low": br["wilson_ci_low"], "wilson_ci_high": br["wilson_ci_high"],
-        "targeted_acc": None, "targeted_ci_low": None, "targeted_ci_high": None, "cross_entropy_nats": round(ce, 6),
+        "overall_acc": round(br["acc"], 6), "overall_correct": ov_k, "wilson_ci_low": br["wilson_ci_low"], "wilson_ci_high": br["wilson_ci_high"],
+        "targeted_acc": None, "targeted_correct": None, "targeted_ci_low": None, "targeted_ci_high": None, "cross_entropy_nats": round(ce, 6),
         "targeted_ce_nats": None, "bits_per_symbol": round(br["bits_per_symbol"], 6), "shannon_limit_bits": round(br["shannon_limit_bits"], 6),
         "z_score": br["z_score"], "overall_z_score": br["z_score"], "z_p_value": br["z_p_value"],
         "targeted_z_score": None, "targeted_z_p_value": None, "targeted_z_log10_p": None,
@@ -591,20 +697,16 @@ def run_module3_bbp_oracle(config: dict[str, Any], device: torch.device, reuse_c
         }
         uni_corr = art.digits[val_end:] == 0
         n_test = len(uni_corr)
-        rows.append(_oracle_row(ds_name, radix, "Uniform", None, compute_bitrate_metrics(math.log(radix), radix, int(np.sum(uni_corr)), n_test), math.log(radix), n_test, "theoretical_uniform"))
+        rows.append(_oracle_row(ds_name, radix, "Uniform", None, compute_bitrate_metrics(math.log(radix), radix, int(np.sum(uni_corr)), n_test), math.log(radix), n_test, "theoretical_uniform", overall_correct=int(np.sum(uni_corr))))
 
         for arch, m_name in (("mlp", "DigitMLP"), ("transformer", "DigitTransformer")):
             best_m, res = _load_or_train_submodel(arch, "exp5_bbp", ds_name, radix, num_bits, loaders, config, device, reuse_checkpoints)
-            chunks = []
-            with torch.no_grad():
-                for ctx, tgt, _ in loaders["test"]:
-                    with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
-                        logits = best_m(ctx.to(device, non_blocking=True))
-                    chunks.append((torch.argmax(logits.float(), dim=-1) == tgt.to(device, non_blocking=True)).cpu().numpy())
-            model_corr = np.concatenate(chunks)
+            model_corr, nll_vec, _ = _eval_canonical_loader(best_m, loaders["test"], device=device, amp_dtype="float16", extract_attn=False)
             mc_results[f"{ds_name}_{m_name}_vs_Uniform"] = mcnemar_test(model_corr, uni_corr)
-            tm, s = res["test_metrics"], res["summary"]
-            rows.append(_oracle_row(ds_name, radix, m_name, s["param_count"], compute_bitrate_metrics(tm["cross_entropy"], radix, int(np.sum(model_corr)), n_test), tm["cross_entropy"], n_test, str(s["run_dir"])))
+            s = res["summary"]
+            n_ok = int(model_corr.sum())
+            ce_val = float(nll_vec.mean())
+            rows.append(_oracle_row(ds_name, radix, m_name, s["param_count"], compute_bitrate_metrics(ce_val, radix, n_ok, n_test), ce_val, n_test, str(s["run_dir"]), overall_correct=n_ok))
             del best_m
             free_gpu()
     return {"rows": rows, "mcnemar": mc_results}
@@ -636,6 +738,7 @@ def run_experiment_5(modules: list[int] | None = None, reuse_dir: Path | None = 
 
     stat_audit = {
         "module2_crypto_backdoor": m2_out.get("mcnemar", {}),
+        "module2_backdoor_head_ablation": m2_out.get("backdoor_head_ablation", []),
         "module2_classical_vs_clean": {"csprng_backdoor": m2_out.get("audit_plot_data", {}).get("classical_stats", {}), "csprng_clean": m2_out.get("audit_plot_data", {}).get("clean_classical_stats", {})},
         "module3_bbp_oracle": m3_out.get("mcnemar", {}),
     }
