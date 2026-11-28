@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-11-28T12:32:17.275665+00:00",
+  "opset": 17,
+  "models": {
+    "true_pi": {
+      "key": "true_pi",
+      "title": "DigitTransformer (π Base-10)",
+      "dataset": "true_pi",
+      "file": "transformer_true_pi.onnx",
+      "radix": 10,
+      "window_size": 64,
+      "n_layers": 3,
+      "n_heads": 4,
+      "d_model": 96,
+      "n_params": 250080,
+      "size_bytes": 968152,
+      "max_abs_diff_probs": 5.960464477539063e-08,
+      "max_abs_diff_attn": 5.364418029785156e-07,
+      "source_checkpoint": "runs/exp2_constants_final_2026-11-26_18-49-40/checkpoints/transformer_true_pi.pt"
+    },
+    "csprng_backdoor": {
+      "key": "csprng_backdoor",
+      "title": "DigitTransformer (Backdoor V2: t-24, t-7)",
+      "dataset": "csprng_backdoor",
+      "file": "transformer_csprng_backdoor.onnx",
+      "radix": 10,
+      "window_size": 64,
+      "n_layers": 3,
+      "n_heads": 4,
+      "d_model": 96,
+      "n_params": 250080,
+      "size_bytes": 968152,
+      "max_abs_diff_probs": 7.450580596923828e-08,
+      "max_abs_diff_attn": 4.76837158203125e-07,
+      "source_checkpoint": "runs/exp5_mech_interp_2026-11-27_16-57-14/checkpoints/transformer_csprng_backdoor.pt"
+    },
+    "champernowne": {
+      "key": "champernowne",
+      "title": "DigitTransformer (Champernowne C10)",
+      "dataset": "champernowne",
+      "file": "transformer_champernowne.onnx",
+      "radix": 10,
+      "window_size": 64,
+      "n_layers": 3,
+      "n_heads": 4,
+      "d_model": 96,
+      "n_params": 250080,
+      "size_bytes": 968152,
+      "max_abs_diff_probs": 2.3469328880310059e-07,
+      "max_abs_diff_attn": 5.960464477539062e-07,
+      "source_checkpoint": "runs/exp2_constants_final_2026-11-26_18-49-40/checkpoints/transformer_champernowne.pt"
+    },
+    "e_cf": {
+      "key": "e_cf",
+      "title": "DigitTransformer (e Continued Fraction)",
+      "dataset": "e_cf",
+      "file": "transformer_e_cf.onnx",
+      "radix": 11,
+      "window_size": 64,
+      "n_layers": 3,
+      "n_heads": 4,
+      "d_model": 96,
+      "n_params": 250176,
+      "size_bytes": 968920,
+      "max_abs_diff_probs": 5.960464477539062e-07,
+      "max_abs_diff_attn": 5.364418029785156e-07,
+      "source_checkpoint": "runs/exp2_constants_final_2026-11-26_18-49-40/checkpoints/transformer_e_cf.pt"
+    }
+  }
+}

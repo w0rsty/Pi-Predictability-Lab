@@ -1,5 +1,8 @@
 import { useMemo, useState } from "react";
 import type {
+  BackdoorTrainResponse,
+  DreamDatasetId,
+  DreamGpuResponse,
   LabData,
   SandboxAnalyzeResponse,
   SandboxGenerateResponse,
@@ -13,7 +16,10 @@ import {
   generateRationalBrowser,
   parseDigitString,
 } from "../../utils/browserMath";
+import { inferBatchWindows, type OnnxBatchResult, type OnnxModelKey } from "../../utils/onnxEngine";
 import { RandomWalkCanvas } from "../hero/RandomWalkCanvas";
+import { BackdoorDesigner } from "../sandbox/BackdoorDesigner";
+import { DreamLabPanel } from "../sandbox/DreamLabPanel";
 import { CornerReticles } from "../ui/CornerReticles";
 
 interface SandboxViewProps {
@@ -38,9 +44,35 @@ interface SandboxViewProps {
     run_ppm?: boolean;
     run_models?: boolean;
   }) => Promise<SandboxAnalyzeResponse>;
+  onTrainBackdoorGpu: (payload: {
+    lag_a: number;
+    lag_b: number;
+    prev_threshold: number;
+    coeff_a: number;
+    coeff_b: number;
+    coeff_const: number;
+    length?: number;
+    epochs?: number;
+    seed?: number;
+  }) => Promise<BackdoorTrainResponse>;
+  onGenerateDreamGpu: (payload: {
+    dataset: DreamDatasetId;
+    seed_tokens: number[];
+    steps: number;
+    temperature: number;
+    top_k: number;
+    random_seed?: number;
+  }) => Promise<DreamGpuResponse>;
 }
 
-type SandboxTab = "rational" | "formula" | "presets";
+type SandboxTab = "rational" | "formula" | "presets" | "backdoor-designer" | "dream";
+
+const ONNX_CHOICES: Array<{ key: OnnxModelKey; label: string; radix: number }> = [
+  { key: "csprng_backdoor", label: "Transformer · Backdoor V2 (base-10)", radix: 10 },
+  { key: "true_pi", label: "Transformer · π контроль (base-10)", radix: 10 },
+  { key: "champernowne", label: "Transformer · Champernowne (base-10)", radix: 10 },
+  { key: "e_cf", label: "Transformer · Цепная дробь e (base-11)", radix: 11 },
+];
 
 const QUICK_RATIONALS: Array<{ num: number; den: number; label: string; note: string }> = [
   { num: 1, den: 7, label: "1/7", note: "P = 6" },
@@ -59,6 +91,8 @@ export function SandboxView({
   onSendToPiano,
   onGenerateGpu,
   onAnalyzeGpu,
+  onTrainBackdoorGpu,
+  onGenerateDreamGpu,
 }: SandboxViewProps) {
   const [tab, setTab] = useState<SandboxTab>("rational");
   const [num, setNum] = useState(1);
@@ -89,6 +123,11 @@ export function SandboxView({
   );
   const [serverResult, setServerResult] = useState<SandboxAnalyzeResponse | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [onnxModelKey, setOnnxModelKey] = useState<OnnxModelKey>("csprng_backdoor");
+  const [onnxBusy, setOnnxBusy] = useState(false);
+  const [onnxProgress, setOnnxProgress] = useState<{ done: number; total: number } | null>(null);
+  const [onnxResult, setOnnxResult] = useState<OnnxBatchResult | null>(null);
+  const [onnxError, setOnnxError] = useState<string | null>(null);
 
   const localStats = useMemo(
     () => analyzeDigitsInBrowser(digits, seqRadix),
@@ -184,6 +223,48 @@ export function SandboxView({
     setStatusMsg(`Распознано ${parsed.digits.length} цифр в системе счисления base-${parsed.radix}`);
   };
 
+  const runBrowserOnnxAudit = async () => {
+    const selectedChoice = ONNX_CHOICES.find((c) => c.key === onnxModelKey) ?? ONNX_CHOICES[0];
+    if (seqRadix > selectedChoice.radix) {
+      setOnnxError(
+        `Последовательность base-${seqRadix} несовместима со словарём модели (${selectedChoice.radix}). Выберите e_cf для base-11 или переведите ряд в base-10.`
+      );
+      return;
+    }
+    if (digits.length < 70) {
+      setOnnxError("Для окна контекста 64 нужно минимум 70 цифр последовательности");
+      return;
+    }
+    setOnnxBusy(true);
+    setOnnxError(null);
+    setOnnxProgress(null);
+    try {
+      const startPos = 64;
+      const totalWin = Math.min(256, digits.length - startPos);
+      const windows: number[][] = [];
+      const targets: number[] = [];
+      for (let i = 0; i < totalWin; i++) {
+        const t = startPos + i;
+        windows.push(digits.slice(t - 64, t));
+        targets.push(digits[t]);
+      }
+      const res = await inferBatchWindows(onnxModelKey, windows, targets, {
+        batchSize: 32,
+        baseOffset: startPos,
+        onProgress: (done, total) => setOnnxProgress({ done, total }),
+      });
+      setOnnxResult(res);
+      setStatusMsg(
+        `Browser ONNX (${onnxModelKey}) просканировал ${res.windowsScanned} окон за ${res.elapsedMs} ms · Acc ${(res.overallAcc * 100).toFixed(2)}%`
+      );
+    } catch (err) {
+      setOnnxError(err instanceof Error ? err.message : "Ошибка браузерного ONNX-инференса");
+    } finally {
+      setOnnxBusy(false);
+      setOnnxProgress(null);
+    }
+  };
+
   const runServerAudit = async () => {
     if (!isGpuConnected) {
       onOpenGpuModal();
@@ -224,12 +305,14 @@ export function SandboxView({
       </div>
 
       {/* Подчёркнутые вкладки */}
-      <div className="flex flex-wrap gap-6 border-b border-[var(--rule)]">
+      <div className="flex flex-nowrap gap-5 overflow-x-auto border-b border-[var(--rule)] sm:gap-6">
         {(
           [
             { id: "rational", label: "Дробь p/q (браузер)" },
             { id: "formula", label: "Формула mpmath (GPU)" },
             { id: "presets", label: "Шум / Backdoor / Свой срез" },
+            { id: "backdoor-designer", label: "Конструктор закладок" },
+            { id: "dream", label: "Сны нейросети" },
           ] as const
         ).map((t) => {
           const active = tab === t.id;
@@ -239,7 +322,7 @@ export function SandboxView({
               type="button"
               data-testid={`sandbox-tab-${t.id}`}
               onClick={() => setTab(t.id)}
-              className={`-mb-px border-b-2 pb-3 font-sans text-sm font-medium transition-colors ${
+              className={`-mb-px shrink-0 border-b-2 pb-3 font-sans text-sm font-medium transition-colors ${
                 active
                   ? "border-[var(--sig-h1)] text-[var(--ink)]"
                   : "border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]"
@@ -252,8 +335,17 @@ export function SandboxView({
       </div>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
-        {/* ЛЕВАЯ КОЛОНКА ПРЯМО НА СТОЛЕ (без внешней обводки) */}
-        <section className="lg:col-span-5 flex flex-col justify-between space-y-6">
+        {tab === "dream" ? (
+          <DreamLabPanel
+            theme={theme}
+            isGpuConnected={isGpuConnected}
+            onSendToPiano={onSendToPiano}
+            onGenerateDreamGpu={onGenerateDreamGpu}
+          />
+        ) : (
+          <>
+            {/* ЛЕВАЯ КОЛОНКА ПРЯМО НА СТОЛЕ (без внешней обводки) */}
+            <section className="lg:col-span-5 flex flex-col justify-between space-y-6">
           <div className="space-y-6">
             {tab === "rational" && (
               <div className="space-y-4">
@@ -473,7 +565,27 @@ export function SandboxView({
               </div>
             )}
 
-            {/* Быстрые пресеты дробей прямо на бумаге */}
+            {tab === "backdoor-designer" && (
+              <BackdoorDesigner
+                isGpuConnected={isGpuConnected}
+                onOpenGpuModal={onOpenGpuModal}
+                onSequenceGenerated={(seq) => {
+                  setDigits(seq.digits);
+                  setMask(seq.mask);
+                  setSeqRadix(10);
+                  setLabel(seq.label);
+                  setPeriodInfo(null);
+                  setServerResult(null);
+                  setOnnxResult(null);
+                }}
+                onSendToPiano={onSendToPiano}
+                onTrainBackdoorGpu={onTrainBackdoorGpu}
+              />
+            )}
+
+            {tab !== "backdoor-designer" && (
+              <>
+                {/* Быстрые пресеты дробей прямо на бумаге */}
             <div className="space-y-2.5 border-t border-[var(--rule)] pt-5">
               <div className="font-sans text-xs font-medium text-[var(--ink-2)]">
                 Быстрые дроби в один клик
@@ -544,30 +656,67 @@ export function SandboxView({
                 </div>
               </div>
             </div>
+              </>
+            )}
           </div>
 
-          <div className="space-y-3 border-t border-[var(--rule)] pt-4">
-            {statusMsg && <div className="font-sans text-xs text-[var(--ink-2)]">{statusMsg}</div>}
+          {tab !== "backdoor-designer" && (
+            <div className="space-y-3 border-t border-[var(--rule)] pt-4">
+              {statusMsg && <div className="font-sans text-xs text-[var(--ink-2)]">{statusMsg}</div>}
 
-            <div className="flex flex-wrap gap-2.5">
-              <button
-                type="button"
-                onClick={() => onSendToPiano({ label, digits, mask })}
-                className="rounded-[4px] border border-[var(--rule-strong)] bg-transparent px-3.5 py-2 font-sans text-xs font-medium text-[var(--ink)] transition-colors hover:border-[var(--ink)]"
-              >
-                Отправить в Пианино π
-              </button>
-              <button
-                type="button"
-                data-testid="sandbox-server-audit-btn"
-                disabled={isBusy}
-                onClick={runServerAudit}
-                className="flex-1 rounded-[4px] bg-[var(--ink)] px-4 py-2 font-sans text-xs font-medium text-[var(--bg)] transition-opacity hover:opacity-90 disabled:opacity-50"
-              >
-                {isGpuConnected ? "Запустить GPU + PPM-C аудит" : "GPU-аудит (нужен мост)"}
-              </button>
+              {/* Браузерный ONNX инференс */}
+              <div className="space-y-2 rounded-[4px] border border-[var(--rule)] bg-[var(--bg-alt)]/50 p-3">
+                <div className="font-sans text-xs font-medium text-[var(--ink)]">
+                  Браузерный нейро-инференс (ONNX WASM SIMD)
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <select
+                    value={onnxModelKey}
+                    onChange={(e) => setOnnxModelKey(e.target.value as OnnxModelKey)}
+                    aria-label="Модель Browser ONNX"
+                    className="desk-select flex-1 min-w-[200px] py-1.5 text-xs"
+                  >
+                    {ONNX_CHOICES.map((c) => (
+                      <option key={c.key} value={c.key}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    data-testid="sandbox-onnx-audit-btn"
+                    disabled={onnxBusy}
+                    onClick={runBrowserOnnxAudit}
+                    className="rounded-[4px] border border-[var(--sig-h1)] bg-[var(--bg)] px-3.5 py-1.5 font-sans text-xs font-medium text-[var(--ink)] transition-colors hover:bg-[var(--sig-h1)] hover:text-[#151412] disabled:opacity-50"
+                  >
+                    {onnxBusy
+                      ? `ONNX ${onnxProgress ? `${onnxProgress.done}/${onnxProgress.total}` : "…"}`
+                      : "Проверить нейросетью в браузере (ONNX)"}
+                  </button>
+                </div>
+                {onnxError && <div className="font-mono text-[11px] text-[var(--sig-h1)]">{onnxError}</div>}
+              </div>
+
+              <div className="flex flex-wrap gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => onSendToPiano({ label, digits, mask })}
+                  className="rounded-[4px] border border-[var(--rule-strong)] bg-transparent px-3.5 py-2 font-sans text-xs font-medium text-[var(--ink)] transition-colors hover:border-[var(--ink)]"
+                >
+                  Отправить в Пианино π
+                </button>
+                <button
+                  type="button"
+                  data-testid="sandbox-server-audit-btn"
+                  disabled={isBusy}
+                  onClick={runServerAudit}
+                  className="flex-1 rounded-[4px] bg-[var(--ink)] px-4 py-2 font-sans text-xs font-medium text-[var(--bg)] transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {isGpuConnected ? "Запустить GPU + PPM-C аудит" : "GPU-аудит (нужен мост)"}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </section>
 
         {/* ПРАВАЯ КОЛОНКА: ТЁМНЫЙ ПРИБОР-ВЫВОД + ПЛОТТЕР */}
@@ -637,6 +786,39 @@ export function SandboxView({
               </div>
             </div>
 
+            {onnxResult && (
+              <div
+                data-testid="sandbox-onnx-result"
+                className="space-y-2 border-t border-[var(--device-rule)] pt-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-xs">
+                  <span className="text-[var(--device-ink)]">
+                    Browser ONNX ({onnxResult.modelKey}) · {onnxResult.windowsScanned} окон за{" "}
+                    {onnxResult.elapsedMs} ms
+                  </span>
+                  <span className="text-[var(--dev-signal)]">
+                    Acc {(onnxResult.overallAcc * 100).toFixed(2)}%
+                  </span>
+                </div>
+                <div className="font-mono text-[11px] text-[var(--device-ink-2)]">
+                  Топ-лаги внимания:{" "}
+                  {onnxResult.topLags
+                    .slice(0, 4)
+                    .map((l) => `t−${l.lag} (${(l.weight * 100).toFixed(1)}%)`)
+                    .join(" · ")}
+                </div>
+                {onnxResult.anomalies.length > 0 && (
+                  <div className="font-mono text-[10px] text-[var(--device-ink-muted)]">
+                    Пики уверенности (p ≥ 35%):{" "}
+                    {onnxResult.anomalies
+                      .slice(0, 4)
+                      .map((a) => `@${a.targetPos}→${a.pred} (${(a.confidence * 100).toFixed(0)}%)`)
+                      .join(", ")}
+                  </div>
+                )}
+              </div>
+            )}
+
             {serverResult && (
               <div className="space-y-3 border-t border-[var(--device-rule)] pt-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-xs">
@@ -696,6 +878,8 @@ export function SandboxView({
             customSequence={{ label, digits, mask, radix: seqRadix }}
           />
         </section>
+          </>
+        )}
       </div>
     </div>
   );

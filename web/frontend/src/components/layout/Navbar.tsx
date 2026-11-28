@@ -36,7 +36,7 @@ export function Navbar({
   const isConnected = gpuStatus === "connected" && gpuHealth !== null;
   const gpuLabel = isConnected
     ? gpuHealth.gpu_name.replace("NVIDIA GeForce ", "")
-    : "Local GPU";
+    : "Browser ONNX";
 
   return (
     <header className="sticky top-0 z-40 border-b border-[var(--rule)] bg-[var(--bg)]/90 backdrop-blur-sm">
@@ -98,22 +98,35 @@ export function Navbar({
         </nav>
 
         {/* Правая панель: статус GPU, тема, GitHub */}
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-3">
           <button
             type="button"
             onClick={onOpenGpuModal}
             data-testid="gpu-status-btn"
-            className="flex items-center gap-2 rounded-[4px] border border-transparent px-2 py-1 font-mono text-[11px] text-[var(--ink-2)] transition-colors hover:border-[var(--rule-strong)] hover:text-[var(--ink)]"
-            title="Настройка подключения локального GPU-сервера"
+            className="flex items-center gap-1.5 rounded-[4px] border border-transparent px-1.5 py-1 font-mono text-[11px] text-[var(--ink-2)] transition-colors hover:border-[var(--rule-strong)] hover:text-[var(--ink)] sm:gap-2 sm:px-2"
+            title={
+              isConnected
+                ? "Подключён локальный GPU-мост PyTorch"
+                : "Автономный режим Browser ONNX (WASM SIMD). Нажмите для подключения Local GPU"
+            }
           >
-            <span
-              className="h-1.5 w-1.5 rounded-full"
-              style={{
-                backgroundColor: isConnected ? "var(--sig-gpu)" : "var(--ink-muted)",
-              }}
-            />
+            {isConnected ? (
+              <span
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ backgroundColor: "var(--sig-gpu)" }}
+              />
+            ) : (
+              <span
+                aria-hidden="true"
+                className="inline-block h-2 w-2 rounded-full border border-[var(--sig-h1)]"
+                style={{
+                  background:
+                    "linear-gradient(90deg, var(--sig-h1) 50%, transparent 50%)",
+                }}
+              />
+            )}
             <span className="hidden max-w-[160px] truncate sm:inline">{gpuLabel}</span>
-            <span className="sm:hidden">GPU</span>
+            <span className="sm:hidden">{isConnected ? "GPU" : "ONNX"}</span>
           </button>
 
           <span className="h-4 w-px bg-[var(--rule)]" aria-hidden="true" />

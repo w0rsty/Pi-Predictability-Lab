@@ -400,6 +400,8 @@ export interface HealthResponse {
     size_tier: string;
   }>;
   ablation_datasets: string[];
+  auth_required?: boolean;
+  auth_valid?: boolean;
 }
 
 export interface SandboxGenerateResponse {
@@ -545,5 +547,86 @@ export interface ArenaSessionResponse {
   radix: number;
   rounds: ArenaRound[];
   source: "live_gpu";
+  latency_ms: number;
+}
+
+export interface BackdoorTrainResponse {
+  params_count: number;
+  device: string;
+  elapsed_ms: number;
+  epochs_ran: number;
+  train_samples: number;
+  test_samples: number;
+  total_triggers: number;
+  targeted_count: number;
+  overall_acc: number;
+  targeted_acc: number | null;
+  unmasked_acc: number;
+  z_score: number;
+  targeted_z_score: number | null;
+  attention_profile: number[];
+  mean_attention_profile: number[];
+  top_lags: ArenaLagWeight[];
+  history: Array<{
+    epoch: number;
+    train_loss: number;
+    val_loss: number;
+  }>;
+  bijectivity: {
+    gcd: number;
+    is_bijective: boolean;
+    reachable_digits: number[];
+  };
+}
+
+export type DreamDatasetId = "true_pi" | "champernowne" | "e_cf" | "csprng_backdoor";
+
+export interface DreamSeedEntry {
+  id: string;
+  dataset: DreamDatasetId;
+  label: string;
+  description: string;
+  vocab_size: number;
+  global_offset: number;
+  seed_tokens: number[];
+  ground_truth: number[];
+}
+
+export interface DreamSeedsBank {
+  version: number;
+  seed_length: number;
+  truth_length: number;
+  seeds: DreamSeedEntry[];
+}
+
+export interface DreamCycleInfo {
+  period: number;
+  start_step: number;
+  motif: string;
+}
+
+export interface DreamSelfTrigger {
+  step: number;
+  expected: number;
+  chosen: number;
+  matched: boolean;
+  a: number;
+  b: number;
+  c: number;
+}
+
+export interface DreamGpuResponse {
+  dataset: DreamDatasetId;
+  vocab_size: number;
+  steps: number;
+  temperature: number;
+  top_k: number;
+  generated_tokens: number[];
+  step_raw_entropies: number[];
+  step_temp_entropies: number[];
+  step_chosen_probs: number[];
+  last_probs: number[];
+  self_triggers: DreamSelfTrigger[];
+  cycle_info: DreamCycleInfo | null;
   latency_ms: number;
 }

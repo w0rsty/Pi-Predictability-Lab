@@ -180,8 +180,10 @@ def main() -> None:
     print(f"[export_static_data] OK -> {OUT_PATH} ({size_kb:.1f} KB, backdoor triggers in slice: {trig_count})")
 
     from web.export_arena_data import export_arena_rounds
+    from web.export_dream_seeds import export_dream_seeds
 
     export_arena_rounds()
+    export_dream_seeds()
 
 
 if __name__ == "__main__":

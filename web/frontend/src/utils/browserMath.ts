@@ -282,6 +282,220 @@ export function analyzeDigitsInBrowser(digits: number[], radix: number): Browser
   };
 }
 
+export interface CustomBackdoorParams {
+  lagA: number;
+  lagB: number;
+  prevThreshold: number;
+  coeffA: number;
+  coeffB: number;
+  coeffConst: number;
+}
+
+export interface CustomBackdoorAuditResult {
+  triggerCount: number;
+  triggerFraction: number;
+  overallChi2Stat: number;
+  overallChi2P: number;
+  conditionalChi2Stat: number;
+  conditionalChi2P: number;
+  conditionalCounts: number[];
+  maxAcf: number;
+  maxAcfLag: number;
+  acfBonferroniBound: number;
+  acfLagValues: Array<{ lag: number; value: number }>;
+  markovK1OverallAcc: number;
+  markovK1TargetedAcc: number | null;
+  bijectivity: {
+    gcd: number;
+    isBijective: boolean;
+    reachableDigits: number[];
+  };
+}
+
+function gcdInt(a: number, b: number): number {
+  let x = Math.abs(a);
+  let y = Math.abs(b);
+  while (y !== 0) {
+    const t = y;
+    y = x % y;
+    x = t;
+  }
+  return x;
+}
+
+export function analyzeFormulaBijectivity(
+  coeffA: number,
+  coeffB: number,
+  coeffConst: number
+): { gcd: number; isBijective: boolean; reachableDigits: number[] } {
+  const diff = Math.abs(coeffA - coeffB);
+  const gcd = diff === 0 ? 10 : gcdInt(diff, 10);
+  const set = new Set<number>();
+  for (let a = 0; a < 10; a++) {
+    const b = (10 - a) % 10;
+    const out = (((coeffA * a + coeffB * b + coeffConst) % 10) + 10) % 10;
+    set.add(out);
+  }
+  return {
+    gcd,
+    isBijective: gcd === 1 && set.size === 10,
+    reachableDigits: Array.from(set).sort((x, y) => x - y),
+  };
+}
+
+/** Криптостойкий генератор десятичных цифр в браузере с rejection sampling (без modulo bias). */
+export function generateCryptoRandomDigits(length: number): number[] {
+  const n = Math.max(100, Math.min(30_000, Math.floor(length)));
+  const out = new Array<number>(n);
+  const buf = new Uint8Array(Math.min(4096, Math.max(256, Math.ceil(n * 1.15))));
+  let filled = 0;
+  const cryptoObj = globalThis.crypto;
+
+  while (filled < n) {
+    if (cryptoObj && typeof cryptoObj.getRandomValues === "function") {
+      cryptoObj.getRandomValues(buf);
+      for (let i = 0; i < buf.length && filled < n; i++) {
+        if (buf[i] < 250) {
+          out[filled++] = buf[i] % 10;
+        }
+      }
+    } else {
+      out[filled++] = Math.floor(Math.random() * 10);
+    }
+  }
+  return out;
+}
+
+export function applyCustomBackdoorBrowser(
+  baseDigits: number[],
+  params: CustomBackdoorParams
+): { digits: number[]; mask: number[]; triggerCount: number } {
+  const digits = baseDigits.slice();
+  const mask = new Array<number>(digits.length).fill(0);
+  const startT = Math.max(params.lagA, params.lagB, 1);
+  let triggerCount = 0;
+
+  for (let t = startT; t < digits.length; t++) {
+    const a = digits[t - params.lagA];
+    const b = digits[t - params.lagB];
+    const c = digits[t - 1];
+    if ((a + b) % 10 === 0 && c < params.prevThreshold) {
+      digits[t] = (((params.coeffA * a + params.coeffB * b + params.coeffConst) % 10) + 10) % 10;
+      mask[t] = 1;
+      triggerCount += 1;
+    }
+  }
+  return { digits, mask, triggerCount };
+}
+
+export function analyzeCustomBackdoorBrowser(
+  digits: number[],
+  mask: number[],
+  params: CustomBackdoorParams
+): CustomBackdoorAuditResult {
+  const n = digits.length;
+  const overallCounts = new Array<number>(10).fill(0);
+  const condCounts = new Array<number>(10).fill(0);
+  let triggerCount = 0;
+
+  for (let i = 0; i < n; i++) {
+    const d = digits[i];
+    if (d >= 0 && d < 10) overallCounts[d] += 1;
+    if (mask[i] === 1) {
+      triggerCount += 1;
+      if (d >= 0 && d < 10) condCounts[d] += 1;
+    }
+  }
+
+  const chi2 = (counts: number[], total: number) => {
+    if (total <= 0) return { stat: 0, p: 1 };
+    const exp = total / 10;
+    let stat = 0;
+    for (let d = 0; d < 10; d++) {
+      const diff = counts[d] - exp;
+      stat += (diff * diff) / exp;
+    }
+    return { stat, p: chiSquareSurvival(stat, 9) };
+  };
+
+  const overallChi = chi2(overallCounts, n);
+  const condChi = chi2(condCounts, triggerCount);
+
+  // Выборочная автокорреляция на лагах 1..maxLag + порог Бонферрони
+  const maxLag = Math.min(48, Math.max(10, Math.floor(n / 4)));
+  let mean = 0;
+  for (let i = 0; i < n; i++) mean += digits[i];
+  mean /= Math.max(n, 1);
+  let varSum = 0;
+  for (let i = 0; i < n; i++) {
+    const diff = digits[i] - mean;
+    varSum += diff * diff;
+  }
+
+  const acfLagValues: Array<{ lag: number; value: number }> = [];
+  let maxAcf = 0;
+  let maxAcfLag = 1;
+  for (let lag = 1; lag <= maxLag; lag++) {
+    let cov = 0;
+    for (let i = lag; i < n; i++) {
+      cov += (digits[i] - mean) * (digits[i - lag] - mean);
+    }
+    const r = varSum > 1e-12 ? cov / varSum : 0;
+    acfLagValues.push({ lag, value: r });
+    if (Math.abs(r) > Math.abs(maxAcf)) {
+      maxAcf = Math.abs(r);
+      maxAcfLag = lag;
+    }
+  }
+  // Аппроксимация порога Бонферрони для alpha=0.05 (двусторонний p = 0.05 / (2 * maxLag))
+  const tailP = 0.05 / (2 * maxLag);
+  const zBonf = Math.sqrt(2 * Math.log(1 / (Math.sqrt(2 * Math.PI) * tailP)) - Math.log(2 * Math.log(1 / tailP)));
+  const acfBonferroniBound = (Number.isFinite(zBonf) && zBonf > 2 ? zBonf : 3.28) / Math.sqrt(Math.max(n, 1));
+
+  // Марковская модель k=1 (80/20 сплит) для overall и mask==1
+  const splitIdx = Math.max(20, Math.floor(n * 0.8));
+  const trans = Array.from({ length: 10 }, () => new Array<number>(10).fill(1e-3));
+  for (let i = 0; i < splitIdx - 1; i++) {
+    trans[digits[i]][digits[i + 1]] += 1;
+  }
+  const argmaxRow = trans.map((row) => {
+    let best = 0;
+    for (let d = 1; d < 10; d++) if (row[d] > row[best]) best = d;
+    return best;
+  });
+  let corrAll = 0;
+  let totAll = 0;
+  let corrTrig = 0;
+  let totTrig = 0;
+  for (let i = splitIdx; i < n - 1; i++) {
+    const pred = argmaxRow[digits[i]];
+    const hit = pred === digits[i + 1] ? 1 : 0;
+    corrAll += hit;
+    totAll += 1;
+    if (mask[i + 1] === 1) {
+      corrTrig += hit;
+      totTrig += 1;
+    }
+  }
+
+  return {
+    triggerCount,
+    triggerFraction: n > 0 ? triggerCount / n : 0,
+    overallChi2Stat: overallChi.stat,
+    overallChi2P: overallChi.p,
+    conditionalChi2Stat: condChi.stat,
+    conditionalChi2P: condChi.p,
+    conditionalCounts: condCounts,
+    maxAcf,
+    maxAcfLag,
+    acfBonferroniBound,
+    acfLagValues,
+    markovK1OverallAcc: totAll > 0 ? corrAll / totAll : 0.1,
+    markovK1TargetedAcc: totTrig > 0 ? corrTrig / totTrig : null,
+    bijectivity: analyzeFormulaBijectivity(params.coeffA, params.coeffB, params.coeffConst),
+  };
+}
+
 export function parseDigitString(raw: string): { digits: number[]; radix: number } {
   const cleaned = raw.replace(/[\s,._;]+/g, "").toLowerCase();
   if (!cleaned) return { digits: [], radix: 10 };

@@ -2,18 +2,21 @@
 import asyncio
 import inspect
 import json
+import os
+import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from web.services.arena_service import generate_live_arena_session
+from web.services.backdoor_trainer import train_custom_backdoor_sync
 from web.services.mech_interp_service import run_multi_head_ablation_sync
 from web.services.model_registry import ModelRegistry, ROOT_DIR
 from web.services.safe_math import SafeMathError
@@ -21,11 +24,32 @@ from web.services.sandbox_service import (
     analyze_cpu_part_sync,
     build_verdict,
     eval_loaded_models_sync,
+    generate_dream_sync,
     generate_sequence_sync,
 )
 
 STATIC_DATA_PATH = ROOT_DIR / "web" / "frontend" / "public" / "data" / "lab_data.json"
 DIST_DIR = ROOT_DIR / "web" / "frontend" / "dist"
+LAB_API_TOKEN = os.getenv("LAB_API_TOKEN", "").strip()
+
+
+def _get_lab_token() -> str:
+    env_val = os.getenv("LAB_API_TOKEN")
+    if env_val is not None:
+        return env_val.strip()
+    return LAB_API_TOKEN.strip()
+
+
+def verify_lab_token(x_lab_token: str | None = Header(default=None, alias="X-Lab-Token")) -> None:
+    """Проверяет заголовок X-Lab-Token при включённом LAB_API_TOKEN (защита удалённого туннеля)."""
+    expected = _get_lab_token()
+    if not expected:
+        return
+    if not x_lab_token or not secrets.compare_digest(x_lab_token.strip(), expected):
+        raise HTTPException(
+            status_code=401,
+            detail="Требуется корректный токен доступа (X-Lab-Token)",
+        )
 
 
 class GenerateRequest(BaseModel):
@@ -58,6 +82,27 @@ class ArenaSessionRequest(BaseModel):
     seed: int | None = Field(default=None, ge=0, le=2_147_483_647)
 
 
+class TrainBackdoorRequest(BaseModel):
+    lag_a: int = Field(default=31, ge=2, le=48)
+    lag_b: int = Field(default=11, ge=2, le=48)
+    prev_threshold: int = Field(default=4, ge=1, le=9)
+    coeff_a: int = Field(default=4, ge=0, le=9)
+    coeff_b: int = Field(default=1, ge=0, le=9)
+    coeff_const: int = Field(default=5, ge=0, le=9)
+    length: int = Field(default=32_000, ge=2000, le=60_000)
+    epochs: int | None = Field(default=None, ge=2, le=30)
+    seed: int = Field(default=42, ge=0, le=2_147_483_647)
+
+
+class DreamRequest(BaseModel):
+    dataset: Literal["true_pi", "champernowne", "e_cf", "csprng_backdoor"]
+    seed_tokens: list[int] = Field(..., min_length=64, max_length=64)
+    steps: int = Field(default=300, ge=10, le=1000)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    top_k: int = Field(default=0, ge=0, le=10)
+    random_seed: int = Field(default=42, ge=0, le=2_147_483_647)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     registry = ModelRegistry(ROOT_DIR)
@@ -75,13 +120,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS для локального Vite dev-сервера и публичной витрины GitHub Pages
+# CORS для локального Vite dev-сервера и публичной витрины GitHub Pages (включая HTTPS-туннели)
 _cors_kwargs = {
     "allow_origins": ["https://w0rsty.github.io"],
     "allow_origin_regex": r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     "allow_credentials": False,
     "allow_methods": ["GET", "POST", "OPTIONS"],
-    "allow_headers": ["*"],
+    "allow_headers": ["Content-Type", "X-Lab-Token", "Accept", "Origin"],
 }
 if "allow_private_network" in inspect.signature(CORSMiddleware.__init__).parameters:
     _cors_kwargs["allow_private_network"] = True
@@ -98,9 +143,18 @@ async def add_private_network_access_header(request: Request, call_next):
 
 
 @app.get("/api/health")
-async def api_health(request: Request):
+async def api_health(
+    request: Request,
+    x_lab_token: str | None = Header(default=None, alias="X-Lab-Token"),
+):
     registry: ModelRegistry = request.app.state.registry
-    return registry.health_payload()
+    payload = registry.health_payload()
+    expected = _get_lab_token()
+    payload["auth_required"] = bool(expected)
+    payload["auth_valid"] = (not expected) or bool(
+        x_lab_token and secrets.compare_digest(x_lab_token.strip(), expected)
+    )
+    return payload
 
 
 @app.get("/api/static-data")
@@ -112,7 +166,7 @@ async def api_static_data():
 
 
 @app.post("/api/sandbox/generate")
-async def api_sandbox_generate(req: GenerateRequest):
+async def api_sandbox_generate(req: GenerateRequest, _: None = Depends(verify_lab_token)):
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(
@@ -133,7 +187,7 @@ async def api_sandbox_generate(req: GenerateRequest):
 
 
 @app.post("/api/sandbox/analyze")
-async def api_sandbox_analyze(req: AnalyzeRequest, request: Request):
+async def api_sandbox_analyze(req: AnalyzeRequest, request: Request, _: None = Depends(verify_lab_token)):
     t0 = time.perf_counter()
     if req.mask is not None and len(req.mask) != len(req.digits):
         raise HTTPException(status_code=400, detail="Длина mask должна совпадать с длиной digits")
@@ -176,7 +230,7 @@ async def api_sandbox_analyze(req: AnalyzeRequest, request: Request):
 
 
 @app.post("/api/mech-interp/ablate")
-async def api_mech_interp_ablate(req: AblateRequest, request: Request):
+async def api_mech_interp_ablate(req: AblateRequest, request: Request, _: None = Depends(verify_lab_token)):
     for l_idx, h_idx in req.ablate_heads:
         if not (0 <= l_idx < 3 and 0 <= h_idx < 4):
             raise HTTPException(status_code=400, detail="Индексы голов должны быть в пределах layer=[0..2], head=[0..3]")
@@ -200,7 +254,7 @@ async def api_mech_interp_ablate(req: AblateRequest, request: Request):
 
 
 @app.post("/api/arena/session")
-async def api_arena_session(req: ArenaSessionRequest, request: Request):
+async def api_arena_session(req: ArenaSessionRequest, request: Request, _: None = Depends(verify_lab_token)):
     registry: ModelRegistry = request.app.state.registry
     try:
         async with registry.gpu_semaphore:
@@ -220,6 +274,67 @@ async def api_arena_session(req: ArenaSessionRequest, request: Request):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except TimeoutError as exc:
         raise HTTPException(status_code=408, detail="Превышен таймаут генерации сессии Арены (30с)") from exc
+
+
+@app.post("/api/sandbox/train-backdoor")
+async def api_sandbox_train_backdoor(
+    req: TrainBackdoorRequest,
+    request: Request,
+    _: None = Depends(verify_lab_token),
+):
+    if req.lag_a == req.lag_b:
+        raise HTTPException(status_code=400, detail="Лаги lag_a и lag_b должны различаться")
+    registry: ModelRegistry = request.app.state.registry
+    try:
+        async with registry.gpu_semaphore:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    train_custom_backdoor_sync,
+                    registry.device,
+                    req.lag_a,
+                    req.lag_b,
+                    req.prev_threshold,
+                    req.coeff_a,
+                    req.coeff_b,
+                    req.coeff_const,
+                    req.length,
+                    req.epochs,
+                    req.seed,
+                ),
+                timeout=45.0,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=408, detail="Превышен таймаут экспресс-обучения детектора (45с)") from exc
+
+
+@app.post("/api/sandbox/dream")
+async def api_sandbox_dream(
+    req: DreamRequest,
+    request: Request,
+    _: None = Depends(verify_lab_token),
+):
+    registry: ModelRegistry = request.app.state.registry
+    try:
+        async with registry.gpu_semaphore:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    generate_dream_sync,
+                    registry,
+                    req.dataset,
+                    req.seed_tokens,
+                    req.steps,
+                    req.temperature,
+                    req.top_k,
+                    req.random_seed,
+                ),
+                timeout=30.0,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=408, detail="Превышен таймаут авторегрессионной генерации (30с)") from exc
 
 
 # Монтируем статическую сборку Vite последней, чтобы не перехватывать /api/*
