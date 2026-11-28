@@ -1,0 +1,336 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@theme {
+  --font-serif: "Literata", Georgia, "Times New Roman", serif;
+  --font-display: "Golos Text", system-ui, sans-serif;
+  --font-sans: "Golos Text", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Тема по умолчанию: Archival Desk (тёплая архивная бумага + настольные приборы из антрацита) */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f0e8;
+  --bg-alt: #ebe5d9;
+  --bg-hover: rgba(24, 22, 20, 0.035);
+  --ink: #181614;
+  --ink-2: #56514a;
+  --ink-muted: #7c756c;
+  --rule: rgba(24, 22, 20, 0.12);
+  --rule-strong: rgba(24, 22, 20, 0.25);
+
+  /* Физические приборы на столе */
+  --device-bg: #1b1a18;
+  --device-elevated: #252320;
+  --device-well: #121110;
+  --device-ink: #efe9de;
+  --device-ink-2: #b4aba0;
+  --device-ink-muted: #847c72;
+  --device-rule: rgba(239, 233, 222, 0.11);
+  --device-rule-strong: rgba(239, 233, 222, 0.24);
+  --device-shadow:
+    0 18px 40px -18px rgba(24, 22, 20, 0.28),
+    0 2px 6px rgba(24, 22, 20, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --well-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+
+  /* Научная картографическая палитра данных */
+  --sig-h0: #235a63;
+  --sig-h1: #bf4328;
+  --sig-ochre: #b8862d;
+  --sig-gpu: #2f7a4d;
+  --sig-noise: #8c857b;
+
+  /* Сигналы внутри тёмного прибора */
+  --dev-signal: #df6244;
+  --dev-h0: #5e9ea8;
+  --dev-ochre: #d4a148;
+  --dev-led-on: #4d9e6d;
+  --dev-led-off: #df6244;
+
+  --grid-line: rgba(24, 22, 20, 0.055);
+  --grain-opacity: 0.032;
+  --sb-thumb: #c4bcb0;
+  --sb-track: #f4f0e8;
+}
+
+/* Тёмная тема: Warm Basalt (тёплый сланец одной температуры) */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #151412;
+  --bg-alt: #1c1a17;
+  --bg-hover: rgba(234, 228, 218, 0.035);
+  --ink: #eae4da;
+  --ink-2: #9c9488;
+  --ink-muted: #787066;
+  --rule: rgba(234, 228, 218, 0.11);
+  --rule-strong: rgba(234, 228, 218, 0.24);
+
+  --device-bg: #0e0d0c;
+  --device-elevated: #181614;
+  --device-well: #080707;
+  --device-ink: #eae4da;
+  --device-ink-2: #a59d91;
+  --device-ink-muted: #736b61;
+  --device-rule: rgba(234, 228, 218, 0.10);
+  --device-rule-strong: rgba(234, 228, 218, 0.22);
+  --device-shadow:
+    0 20px 44px -18px rgba(0, 0, 0, 0.72),
+    0 2px 6px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --well-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.75);
+
+  --sig-h0: #5e9ea8;
+  --sig-h1: #df6244;
+  --sig-ochre: #d4a148;
+  --sig-gpu: #4d9e6d;
+  --sig-noise: #787066;
+
+  --dev-signal: #df6244;
+  --dev-h0: #5e9ea8;
+  --dev-ochre: #d4a148;
+  --dev-led-on: #4d9e6d;
+  --dev-led-off: #df6244;
+
+  --grid-line: rgba(234, 228, 218, 0.045);
+  --grain-opacity: 0.03;
+  --sb-thumb: #3c3832;
+  --sb-track: #151412;
+}
+
+html {
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  scroll-behavior: smooth;
+  scrollbar-color: var(--sb-thumb) var(--sb-track);
+  scrollbar-width: thin;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: var(--bg);
+  color: var(--ink);
+  overflow-x: hidden;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+@supports not (scrollbar-color: auto) {
+  * {
+    scrollbar-width: auto;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--sb-track);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--sb-thumb);
+    border-radius: 2px;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Убираем браузерные спиннеры у number-инпутов */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Селект на бумаге / столе */
+.desk-select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  padding: 0.42rem 2rem 0.42rem 0.7rem;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.3;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%237c756c' stroke-width='1.4' stroke-linecap='square'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.55rem center;
+  transition: border-color 150ms ease;
+}
+
+.desk-select:focus {
+  outline: none;
+  border-color: var(--sig-h1);
+}
+
+/* Селект внутри тёмного настольного прибора */
+.device-select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: var(--device-well);
+  color: var(--device-ink);
+  border: 1px solid var(--device-rule-strong);
+  border-radius: 4px;
+  padding: 0.36rem 1.85rem 0.36rem 0.65rem;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%23b4aba0' stroke-width='1.4' stroke-linecap='square'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  transition: border-color 150ms ease;
+}
+
+.device-select:focus {
+  outline: none;
+  border-color: var(--dev-signal);
+}
+
+/* Настольный прибор (тёмное матовое железо с тенью на архивной бумаге) */
+.hardware-device {
+  background-color: var(--device-bg);
+  color: var(--device-ink);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  box-shadow: var(--device-shadow);
+}
+
+.hardware-well {
+  background-color: var(--device-well);
+  border: 1px solid var(--device-rule);
+  box-shadow: var(--well-shadow);
+}
+
+/* Миллиметровка водяного знака */
+.swiss-grid-bg {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.tape-edge-fade {
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, black 8%, black 92%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, black 8%, black 92%, transparent 100%);
+}
+
+/* Бумажная и сланцевая микрофактура */
+.paper-grain-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  opacity: var(--grain-opacity);
+  mix-blend-mode: multiply;
+  background-repeat: repeat;
+  background-size: 180px 180px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+}
+
+:root[data-theme="dark"] .paper-grain-overlay {
+  mix-blend-mode: overlay;
+}
+
+/* Академическая таблица в стиле booktabs (только горизонтальные линии) */
+.booktabs-table {
+  width: 100%;
+  border-collapse: collapse;
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+
+.booktabs-table thead tr {
+  border-bottom: 1px solid var(--ink);
+}
+
+.booktabs-table tbody tr {
+  border-bottom: 1px solid var(--rule);
+}
+
+.booktabs-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+/* Нативный <dialog> для Local GPU */
+dialog:modal {
+  overscroll-behavior: contain;
+  margin: auto;
+  border: 1px solid var(--rule-strong);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 6px;
+  max-width: min(92vw, 38rem);
+  width: 100%;
+  padding: 0;
+  box-shadow: 0 24px 60px -16px rgba(24, 22, 20, 0.35);
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: rgba(24, 22, 20, 0.65);
+  backdrop-filter: blur(3px);
+}
+
+/* Приборный слайдер */
+input[type="range"].instrument-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 3px;
+  background: var(--device-rule-strong);
+  border-radius: 1px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"].instrument-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--device-ink);
+  border: 1px solid var(--device-bg);
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+input[type="range"].instrument-slider::-webkit-slider-thumb:hover {
+  background: var(--dev-signal);
+}
+
+input[type="range"].instrument-slider::-moz-range-thumb {
+  width: 10px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--device-ink);
+  border: 1px solid var(--device-bg);
+  cursor: pointer;
+}
+
+.lab-table-wrapper {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
