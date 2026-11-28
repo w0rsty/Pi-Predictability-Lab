@@ -1,8 +1,8 @@
 # Тяжёлые бинарные датасеты и локальные метаданные
-data/
+/data/
 
 # Локальные прогоны, чекпойнты и веса моделей
-runs/
+/runs/
 *.pt
 *.pth
 *.ckpt
@@ -27,3 +27,10 @@ partial_metrics.csv
 .mcp.json
 AGENTS.md
 CLAUDE.md
+
+# Сборка и зависимости веб-лаборатории
+web/frontend/node_modules/
+web/frontend/dist/
+*.tsbuildinfo
+*.zip
+audit*

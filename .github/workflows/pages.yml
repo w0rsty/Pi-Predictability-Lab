@@ -1,0 +1,55 @@
+name: Deploy Web Lab to GitHub Pages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "web/frontend/**"
+      - "results/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: "web/frontend/package-lock.json"
+
+      - name: Install frontend dependencies
+        working-directory: web/frontend
+        run: npm ci
+
+      - name: Build static showcase
+        working-directory: web/frontend
+        env:
+          VITE_BASE_PATH: "/Pi-Predictability-Lab/"
+        run: npx tsc --noEmit && npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/frontend/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
