@@ -69,6 +69,20 @@ def test_api_health_and_cors_pna():
         assert opt.headers.get("access-control-allow-origin") == "https://w0rsty.github.io"
         assert opt.headers.get("access-control-allow-private-network") == "true"
 
+        opt_tuna = client.options(
+            "/api/health",
+            headers={
+                "Origin": "https://w0rsty.github.io",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "x-lab-token, tuna-skip-browser-warning",
+            },
+        )
+        assert opt_tuna.status_code == 200
+        assert opt_tuna.headers.get("access-control-allow-origin") == "https://w0rsty.github.io"
+        allowed_hdrs = (opt_tuna.headers.get("access-control-allow-headers") or "").lower()
+        assert "x-lab-token" in allowed_hdrs
+        assert "tuna-skip-browser-warning" in allowed_hdrs
+
 
 def test_api_generate_validation_and_analyze_h1_vs_h0():
     with TestClient(app) as client:

@@ -126,7 +126,14 @@ _cors_kwargs = {
     "allow_origin_regex": r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     "allow_credentials": False,
     "allow_methods": ["GET", "POST", "OPTIONS"],
-    "allow_headers": ["Content-Type", "X-Lab-Token", "Accept", "Origin"],
+    "allow_headers": [
+        "Content-Type",
+        "X-Lab-Token",
+        "tuna-skip-browser-warning",
+        "ngrok-skip-browser-warning",
+        "Accept",
+        "Origin",
+    ],
 }
 if "allow_private_network" in inspect.signature(CORSMiddleware.__init__).parameters:
     _cors_kwargs["allow_private_network"] = True

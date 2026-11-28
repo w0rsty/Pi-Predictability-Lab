@@ -21,6 +21,15 @@ export function normalizeBridgeUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
 }
 
+function isRemoteUrl(cleanUrl: string): boolean {
+  try {
+    const h = new URL(cleanUrl).hostname.toLowerCase();
+    return h !== "localhost" && h !== "127.0.0.1" && h !== "[::1]";
+  } catch {
+    return false;
+  }
+}
+
 function isRemoteHttpBlockedOnHttps(cleanUrl: string): boolean {
   if (typeof window === "undefined" || window.location.protocol !== "https:") {
     return false;
@@ -28,8 +37,7 @@ function isRemoteHttpBlockedOnHttps(cleanUrl: string): boolean {
   try {
     const parsed = new URL(cleanUrl);
     if (parsed.protocol !== "http:") return false;
-    const h = parsed.hostname.toLowerCase();
-    return h !== "localhost" && h !== "127.0.0.1" && h !== "[::1]";
+    return isRemoteUrl(cleanUrl);
   } catch {
     return false;
   }
@@ -83,11 +91,15 @@ export function useLocalGpu() {
         setError(null);
       }
 
+      const remote = isRemoteUrl(clean);
+      const timeoutMs = silent ? 1200 : remote ? 10_000 : 4500;
       const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), silent ? 1200 : 4500);
+      const timer = window.setTimeout(() => controller.abort(), timeoutMs);
       const t0 = performance.now();
       try {
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = {
+          "tuna-skip-browser-warning": "true",
+        };
         if (activeToken) {
           headers["X-Lab-Token"] = activeToken;
         }
@@ -97,9 +109,20 @@ export function useLocalGpu() {
           signal: controller.signal,
         });
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+          throw new Error(`Сервер вернул HTTP ${res.status}${res.statusText ? ` (${res.statusText})` : ""}`);
         }
-        const data = (await res.json()) as HealthResponse;
+        const contentType = res.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          throw new Error(
+            "Прокси туннеля вернул HTML вместо JSON (проверьте адрес туннеля и заголовок tuna-skip-browser-warning)."
+          );
+        }
+        let data: HealthResponse;
+        try {
+          data = (await res.json()) as HealthResponse;
+        } catch {
+          throw new Error("Ответ /api/health не является корректным JSON.");
+        }
         const dt = Math.round(performance.now() - t0);
         setBaseUrl(clean);
         setLatencyMs(dt);
@@ -130,10 +153,18 @@ export function useLocalGpu() {
         return true;
       } catch (err) {
         if (!silent) {
-          const msg =
-            err instanceof Error && err.name === "AbortError"
-              ? "Превышен таймаут ожидания (4.5с). Проверьте, запущен ли uvicorn или туннель."
-              : "Не удалось подключиться к мосту. Проверьте адрес и запуск uvicorn web.server:app --port 8000.";
+          let msg = "Не удалось подключиться к мосту. Проверьте адрес и запуск uvicorn web.server:app --port 8000.";
+          if (err instanceof Error) {
+            if (err.name === "AbortError") {
+              msg = `Превышен таймаут ожидания (${remote ? "10с" : "4.5с"}). Проверьте, запущен ли uvicorn или туннель.`;
+            } else if (
+              err.message.startsWith("Сервер вернул HTTP") ||
+              err.message.startsWith("Прокси туннеля") ||
+              err.message.startsWith("Ответ /api/health")
+            ) {
+              msg = err.message;
+            }
+          }
           setError(msg);
           setStatus("error");
           setHealth(null);
@@ -172,7 +203,10 @@ export function useLocalGpu() {
         throw new Error("GPU-мост не подключён");
       }
       const clean = normalizeBridgeUrl(baseUrl);
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "tuna-skip-browser-warning": "true",
+      };
       const activeToken = token.trim();
       if (activeToken) {
         headers["X-Lab-Token"] = activeToken;
