@@ -164,3 +164,114 @@ def test_arena_static_bank_and_live_endpoint():
         assert r_blind.status_code in (200, 503)
         if r_blind.status_code == 200:
             assert len(r_blind.json()["rounds"]) == 10
+
+
+def test_onnx_models_manifest_and_inference():
+    import json
+    from pathlib import Path
+    ort = pytest.importorskip("onnxruntime")
+
+    models_dir = Path(__file__).resolve().parents[1] / "web" / "frontend" / "public" / "models"
+    manifest_path = models_dir / "manifest.json"
+    assert manifest_path.exists(), "ONNX manifest.json не найден"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    for key in ("true_pi", "csprng_backdoor", "champernowne", "e_cf"):
+        assert key in manifest["models"]
+        entry = manifest["models"][key]
+        onnx_file = models_dir / entry["file"]
+        assert onnx_file.exists(), f"Отсутствует файл {onnx_file}"
+        assert entry["max_abs_diff_probs"] < 1e-4
+        assert entry["max_abs_diff_attn"] < 1e-4
+
+        sess = ort.InferenceSession(str(onnx_file), providers=["CPUExecutionProvider"])
+        tokens = np.zeros((2, 64), dtype=np.int64)
+        probs, attn_last = sess.run(["probs", "attn_last"], {"tokens": tokens})
+        assert probs.shape == (2, entry["radix"])
+        assert attn_last.shape == (2, entry["n_layers"], entry["n_heads"], 64)
+        assert np.allclose(probs.sum(axis=-1), 1.0, atol=1e-4)
+
+
+def test_train_backdoor_endpoint():
+    with TestClient(app) as client:
+        # Одинаковые лаги -> 400
+        r_bad = client.post(
+            "/api/sandbox/train-backdoor",
+            json={"lag_a": 12, "lag_b": 12, "prev_threshold": 4, "coeff_a": 4, "coeff_b": 1, "coeff_const": 5},
+        )
+        assert r_bad.status_code == 400
+
+        # Быстрый smoke-тест обучения
+        r_ok = client.post(
+            "/api/sandbox/train-backdoor",
+            json={
+                "lag_a": 24,
+                "lag_b": 7,
+                "prev_threshold": 4,
+                "coeff_a": 4,
+                "coeff_b": 1,
+                "coeff_const": 5,
+                "length": 2500,
+                "epochs": 2,
+                "seed": 42,
+            },
+        )
+        assert r_ok.status_code == 200
+        j = r_ok.json()
+        assert len(j["attention_profile"]) == 64
+        assert abs(sum(j["attention_profile"]) - 1.0) < 1e-3
+        assert len(j["history"]) == 2
+        assert j["bijectivity"]["is_bijective"] is True
+        assert 0.0 <= j["overall_acc"] <= 1.0
+
+
+def test_open_mode_without_lab_api_token(monkeypatch):
+    monkeypatch.delenv("LAB_API_TOKEN", raising=False)
+    with TestClient(app) as client:
+        h = client.get("/api/health").json()
+        assert h["auth_required"] is False
+        assert h["auth_valid"] is True
+
+        r = client.post(
+            "/api/sandbox/generate",
+            json={"mode": "rational", "numerator": 1, "denominator": 7, "length": 150, "radix": 10},
+        )
+        assert r.status_code == 200
+
+
+def test_protected_mode_rejects_missing_or_wrong_token(monkeypatch):
+    monkeypatch.setenv("LAB_API_TOKEN", "itmo-secret-2026")
+    with TestClient(app) as client:
+        h_no = client.get("/api/health").json()
+        assert h_no["auth_required"] is True
+        assert h_no["auth_valid"] is False
+
+        h_bad = client.get("/api/health", headers={"X-Lab-Token": "wrong"}).json()
+        assert h_bad["auth_required"] is True
+        assert h_bad["auth_valid"] is False
+
+        for endpoint, body in [
+            ("/api/sandbox/generate", {"mode": "rational", "numerator": 1, "denominator": 7, "length": 150, "radix": 10}),
+            ("/api/sandbox/analyze", {"name": "t", "digits": [1] * 120, "radix": 10, "run_ppm": False, "run_models": False}),
+            ("/api/sandbox/train-backdoor", {"lag_a": 24, "lag_b": 7}),
+            ("/api/mech-interp/ablate", {"dataset": "e_cf", "ablate_heads": []}),
+            ("/api/arena/session", {"dataset": "true_pi", "n_rounds": 6}),
+        ]:
+            assert client.post(endpoint, json=body).status_code == 401
+            assert client.post(endpoint, json=body, headers={"X-Lab-Token": "wrong"}).status_code == 401
+
+
+def test_protected_mode_accepts_valid_token(monkeypatch):
+    monkeypatch.setenv("LAB_API_TOKEN", "itmo-secret-2026")
+    with TestClient(app) as client:
+        h_ok = client.get("/api/health", headers={"X-Lab-Token": "itmo-secret-2026"}).json()
+        assert h_ok["auth_required"] is True
+        assert h_ok["auth_valid"] is True
+
+        r_ok = client.post(
+            "/api/sandbox/generate",
+            headers={"X-Lab-Token": "itmo-secret-2026"},
+            json={"mode": "rational", "numerator": 1, "denominator": 7, "length": 150, "radix": 10},
+        )
+        assert r_ok.status_code == 200
+        assert len(r_ok.json()["digits"]) == 150

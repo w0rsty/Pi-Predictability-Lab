@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+title: "Pi-Predictability-Lab: Limits of Autoregressive Predictability on Mathematical Constants and Hidden PRNG Backdoors"
+message: "If you use this software or experimental benchmarks in your research, please cite it using the metadata below."
+type: software
+version: "1.0.0"
+date-released: "2026-11-28"
+license: MIT
+repository-code: "https://github.com/w0rsty/Pi-Predictability-Lab"
+url: "https://w0rsty.github.io/Pi-Predictability-Lab/"
+authors:
+  - family-names: "w0rsty"
+    given-names: "Dmitry"
+    alias: "w0rsty"
+keywords:
+  - pi
+  - normality
+  - transformer
+  - mechanistic-interpretability
+  - cryptanalysis
+  - prng-audit
+  - onnx-web
+  - information-theory
+abstract: >-
+  Empirical investigation of autoregressive next-token predictability bounds on irrational
+  constants (pi, e, sqrt(2)), PRNGs, structured mathematical sequences, and hidden
+  multi-lag CSPRNG backdoors using matched-parameter neural architectures (MLP, 1D-CNN,
+  GRU, Causal Mini-Transformer), PPM-C compression, mechanistic interpretability
+  (head ablation, embedding geometry, linear probing), and an interactive Browser ONNX +
+  BYO-GPU web laboratory.

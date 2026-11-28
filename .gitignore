@@ -31,6 +31,7 @@ CLAUDE.md
 # Сборка и зависимости веб-лаборатории
 web/frontend/node_modules/
 web/frontend/dist/
+web/frontend/public/ort/
 *.tsbuildinfo
 *.zip
 audit*

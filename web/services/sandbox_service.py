@@ -182,3 +182,125 @@ def build_verdict(radix: int, stats: dict[str, Any], ppm: dict[str, Any] | None,
             f"KS p={stats['ks_p_value']:.4f}, лучший битрейт {min(best_neural, shannon):.4f} при пределе {shannon:.4f} бит."
         ),
     }
+
+
+def _detect_repetition_cycle(seq: list[int]) -> dict[str, int | str] | None:
+    """Ищет минимальный устойчивый период P in [1..48], повторившийся >= 3 циклов и >= 18 символов."""
+    n = len(seq)
+    if n < 18:
+        return None
+    for period in range(1, min(48, n // 3) + 1):
+        repeats = max(3, math.ceil(18 / period))
+        span = period * repeats
+        if n < span:
+            continue
+        tail = seq[n - span :]
+        pattern = tail[-period:]
+        if all(tail[i] == pattern[i % period] for i in range(span)):
+            motif = "".join(";" if d == 10 else str(d) for d in pattern)
+            return {"period": int(period), "start_step": int(n - span), "motif": motif}
+    return None
+
+
+@torch.no_grad()
+def generate_dream_sync(
+    registry: ModelRegistry,
+    dataset: str,
+    seed_tokens: list[int],
+    steps: int = 300,
+    temperature: float = 0.0,
+    top_k: int = 0,
+    random_seed: int = 42,
+) -> dict[str, Any]:
+    """Авторегрессионное порождение на реальных PyTorch-логитах с замером энтропии, циклов и само-триггеров."""
+    model_key = f"transformer_{dataset}"
+    entry = registry.models.get(model_key)
+    if entry is None:
+        raise ValueError(f"Модель '{model_key}' не загружена в реестре GPU")
+
+    radix = int(entry.radix)
+    win = int(entry.window_size)
+    if len(seed_tokens) != win:
+        raise ValueError(f"Длина seed_tokens должна быть {win}, получено {len(seed_tokens)}")
+    if any(t < 0 or t >= radix for t in seed_tokens):
+        raise ValueError(f"Все токены затравки должны быть в [0, {radix - 1}]")
+
+    t0 = time.perf_counter()
+    rng = np.random.default_rng(int(random_seed))
+    history = [int(t) for t in seed_tokens]
+    generated: list[int] = []
+    step_raw_entropies: list[float] = []
+    step_temp_entropies: list[float] = []
+    step_chosen_probs: list[float] = []
+    self_triggers: list[dict[str, Any]] = []
+    cycle_info: dict[str, int | str] | None = None
+
+    ctx = torch.tensor(history, dtype=torch.long, device=registry.device).unsqueeze(0)
+
+    for step_idx in range(int(steps)):
+        with torch.amp.autocast("cuda", enabled=(registry.device.type == "cuda")):
+            logits = entry.model(ctx)
+        logits_f32 = logits[0].float()
+        raw_probs = F.softmax(logits_f32, dim=-1)
+        h_raw = float(-torch.sum(raw_probs * torch.log2(torch.clamp(raw_probs, min=1e-12))).item())
+
+        if temperature <= 0.02:
+            chosen = int(torch.argmax(logits_f32).item())
+            eff_probs = raw_probs
+            h_temp = 0.0
+        else:
+            scaled = logits_f32 / float(temperature)
+            if top_k > 0 and top_k < radix:
+                top_vals, _ = torch.topk(scaled, k=int(top_k))
+                cutoff = top_vals[-1]
+                scaled = torch.where(scaled >= cutoff, scaled, torch.full_like(scaled, float("-inf")))
+            eff_probs = F.softmax(scaled, dim=-1)
+            h_temp = float(-torch.sum(eff_probs * torch.log2(torch.clamp(eff_probs, min=1e-12))).item())
+            chosen = int(rng.choice(radix, p=eff_probs.cpu().numpy()))
+
+        p_chosen = float(eff_probs[chosen].item())
+
+        if dataset == "csprng_backdoor" and len(history) >= 24:
+            a = history[-24]
+            b = history[-7]
+            c = history[-1]
+            if (a + b) % 10 == 0 and c < 4:
+                expected = (4 * a + b + 5) % 10
+                self_triggers.append({
+                    "step": int(step_idx),
+                    "expected": int(expected),
+                    "chosen": int(chosen),
+                    "matched": bool(chosen == expected),
+                    "a": int(a),
+                    "b": int(b),
+                    "c": int(c),
+                })
+
+        history.append(chosen)
+        generated.append(chosen)
+        step_raw_entropies.append(round(h_raw, 4))
+        step_temp_entropies.append(round(h_temp, 4))
+        step_chosen_probs.append(round(p_chosen, 4))
+
+        if cycle_info is None:
+            cycle_info = _detect_repetition_cycle(generated)
+
+        # Сдвигаем окно ровно на 1 токен без переаллокаций
+        next_tok = torch.tensor([[chosen]], dtype=torch.long, device=registry.device)
+        ctx = torch.cat([ctx[:, 1:], next_tok], dim=1)
+
+    return {
+        "dataset": dataset,
+        "vocab_size": radix,
+        "steps": int(steps),
+        "temperature": float(temperature),
+        "top_k": int(top_k),
+        "generated_tokens": generated,
+        "step_raw_entropies": step_raw_entropies,
+        "step_temp_entropies": step_temp_entropies,
+        "step_chosen_probs": step_chosen_probs,
+        "last_probs": [round(float(x), 5) for x in eff_probs.cpu().tolist()],
+        "self_triggers": self_triggers,
+        "cycle_info": cycle_info,
+        "latency_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+    }

@@ -1,9 +1,13 @@
 # Pi-Predictability-Lab
 
 [![CI](https://github.com/w0rsty/Pi-Predictability-Lab/actions/workflows/ci.yml/badge.svg)](https://github.com/w0rsty/Pi-Predictability-Lab/actions/workflows/ci.yml)
+[![Pages](https://img.shields.io/badge/Live_Lab-GitHub_Pages-BF4328)](https://w0rsty.github.io/Pi-Predictability-Lab/)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-EE4C2C)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+<!-- TODO(release): после публикации релиза на Zenodo вставить DOI-бейдж и 30-секундный демо-GIF -->
+
+> **Интерактивная веб-лаборатория:** [w0rsty.github.io/Pi-Predictability-Lab](https://w0rsty.github.io/Pi-Predictability-Lab/) — браузерные ONNX-модели `DigitTransformer`, 2D Random Walk, Пианино $\pi$, Арена «Человек против нейросети», Конструктор закладок и «Сны нейросети».
 
 Является ли последовательность цифр числа $\pi$ неотличимой от равномерного шума, остаётся одним из старейших открытых вопросов теории чисел (гипотеза нормальности). В машинном обучении эта задача интересна и с методической стороны: попытки «предсказать» следующие цифры $\pi$ нейросетями появляются регулярно, но при аккуратной проверке почти всегда сводятся к перекрытию окон между обучением и тестом или к запоминанию короткого отрезка.
 
@@ -112,6 +116,16 @@
 - Cleary, J. G., & Witten, I. H. (1984). *Data Compression Using Adaptive Coding and Partial String Matching* — алгоритм `PPM-C`, использованный как табличный суффиксный ориентир.
 - L'Ecuyer, P., & Simard, R. (2007). *TestU01: A C Library for Empirical Testing of Random Number Generators* — стандартный контекст эмпирического аудита ГПСЧ (выходящий за рамки базового набора тестов этого стенда).
 
+## Интерактивная веб-лаборатория
+
+Отдельное веб-приложение в [`web/`](web/README.md) публикуется как автономная статическая витрина для браузера (GitHub Pages) и при необходимости подключается к локальной или удалённой GPU по схеме **BYO-Compute**:
+
+- **Обзор и сенсорные модели:** живой 2D Random Walk ($\theta_d = 36^\circ \cdot d$) и Web Audio синтезатор «Пианино $\pi$» с подсветкой скрытых триггеров.
+- **Атлас и Мехинтерп:** интерактивные графики Экспериментов 01–04, геометрия эмбеддингов и пульт из 12 тумблеров каузальной абляции голов внимания.
+- **Арена «Человек против нейросети»:** дуэль предсказания следующего символа против `DigitTransformer`, `DigitGRU` и `PPM-C` (статический банк из тестовых выборок + живой `Browser ONNX` в WebAssembly SIMD).
+- **Песочница, Конструктор закладок и Сны нейросети:** генерация дробей $p/q$, AST-формул `mpmath`, проектирование 2-лаговых биективных и вырожденных закладок, экспресс-обучение детектора на GPU и авторегрессионное порождение с температурой $\tau$, детектором циклов и двойным Random Walk.
+- **Безопасный удалённый доступ:** опциональный токен `LAB_API_TOKEN` (заголовок `X-Lab-Token`, хранение в `sessionStorage`) для работы с домашней GPU с другого ноутбука через HTTPS-туннель (`Tuna`, `cloudflared`, `Tailscale Funnel`).
+
 ## Воспроизведение и ноутбуки
 
 Исходные эксперименты выполнены на Linux (`AMD Ryzen 5 5600X`, `NVIDIA RTX 3060 Ti 8 GB`, `Python 3.14.7`, `PyTorch 2.15.0+cu132`); в [`pyproject.toml`](pyproject.toml) и [`requirements.txt`](requirements.txt) указаны минимальные совместимые версии (`Python >= 3.11`, `PyTorch >= 2.4`). Разборы черновых проверок и артефактов собраны в [`docs/RESEARCH_LOG.md`](docs/RESEARCH_LOG.md) и двух выполненных ноутбуках: [`01_quick_sanity_check.ipynb`](notebooks/01_quick_sanity_check.ipynb) и [`02_leakage_illusion_and_dead_ends.ipynb`](notebooks/02_leakage_illusion_and_dead_ends.ipynb).
@@ -124,5 +138,3 @@ pip install -e ".[dev]"
 ./reproduce.sh --quick   # py_compile + CPU pytest + двусторонний smoke-тест (H1 1/97 и H0 шум)
 ./reproduce.sh --full    # Полный цикл экспериментов 01..07 (нужна CUDA)
 ```
-
-#

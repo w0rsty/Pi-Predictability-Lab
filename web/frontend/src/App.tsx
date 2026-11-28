@@ -106,6 +106,8 @@ export function App() {
                   onSendToPiano={handleSendToPiano}
                   onGenerateGpu={gpu.generateFormula}
                   onAnalyzeGpu={gpu.analyzeSequence}
+                  onTrainBackdoorGpu={gpu.trainBackdoor}
+                  onGenerateDreamGpu={gpu.generateDream}
                 />
               )}
               {activeTab === "arena" && (
@@ -140,7 +142,7 @@ export function App() {
                 Документация (Research Log)
               </a>
               <span className="font-mono text-[11px] text-[var(--ink-2)]">
-                {gpu.isConnected ? "Local Compute: 127.0.0.1:8000" : "Static Showcase"}
+                {gpu.isConnected ? `Compute Bridge: ${gpu.baseUrl}` : "Browser ONNX / Static"}
               </span>
             </div>
           </div>
@@ -151,6 +153,8 @@ export function App() {
           onClose={() => setGpuModalOpen(false)}
           baseUrl={gpu.baseUrl}
           onChangeBaseUrl={gpu.setBaseUrl}
+          token={gpu.token}
+          onChangeToken={gpu.setToken}
           status={gpu.status}
           health={gpu.health}
           latencyMs={gpu.latencyMs}

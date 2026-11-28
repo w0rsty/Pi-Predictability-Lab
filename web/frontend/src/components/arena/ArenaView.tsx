@@ -13,6 +13,7 @@ import {
   type PlayedRoundRecord,
   humanBitsForChoice,
 } from "../../utils/arenaStats";
+import { generateBrowserOnnxArenaSession } from "../../utils/browserArena";
 import { playToggleClick } from "../../utils/tactileAudio";
 import { ArenaConsole, type ArenaPhase } from "./ArenaConsole";
 import { ArenaDebrief } from "./ArenaDebrief";
@@ -84,7 +85,8 @@ export function ArenaView({ theme, isGpuConnected, onFetchLiveSession }: ArenaVi
 
   const [mode, setMode] = useState<ArenaModeId>("true_pi");
   const [preferLiveGpu, setPreferLiveGpu] = useState<boolean>(true);
-  const [sourceLabel, setSourceLabel] = useState<"static" | "live_gpu">("static");
+  const [preferBrowserOnnx, setPreferBrowserOnnx] = useState<boolean>(false);
+  const [sourceLabel, setSourceLabel] = useState<"static" | "live_gpu" | "browser_onnx">("static");
   const [loadingSession, setLoadingSession] = useState<boolean>(false);
 
   const [rounds, setRounds] = useState<ArenaRound[]>([]);
@@ -122,7 +124,7 @@ export function ArenaView({ theme, isGpuConnected, onFetchLiveSession }: ArenaVi
   }, []);
 
   const startSession = useCallback(
-    async (targetMode: ArenaModeId, useLive: boolean) => {
+    async (targetMode: ArenaModeId, useLive: boolean, useBrowserOnnx = preferBrowserOnnx) => {
       const cfg = ARENA_MODES.find((m) => m.id === targetMode) ?? ARENA_MODES[0];
       setCurrentIdx(0);
       setPhase("playing");
@@ -144,7 +146,26 @@ export function ArenaView({ theme, isGpuConnected, onFetchLiveSession }: ArenaVi
           setLoadingSession(false);
           return;
         } catch {
-          // Бесшовный фоллбэк на статический банк реальных чекпойнтов
+          // Бесшовный фоллбэк
+        } finally {
+          setLoadingSession(false);
+        }
+      }
+
+      if (useBrowserOnnx) {
+        setLoadingSession(true);
+        try {
+          const liveOnnx = await generateBrowserOnnxArenaSession(targetMode, cfg.roundsCount, bank);
+          if (liveOnnx.rounds.length > 0) {
+            setRounds(liveOnnx.rounds);
+            setTrueDataset(liveOnnx.trueDataset);
+            setRadix(liveOnnx.radix);
+            setSourceLabel("browser_onnx");
+            setLoadingSession(false);
+            return;
+          }
+        } catch {
+          // Фоллбэк на статический банк
         } finally {
           setLoadingSession(false);
         }
@@ -158,24 +179,30 @@ export function ArenaView({ theme, isGpuConnected, onFetchLiveSession }: ArenaVi
         setSourceLabel("static");
       }
     },
-    [bank, isGpuConnected, onFetchLiveSession]
+    [bank, isGpuConnected, onFetchLiveSession, preferBrowserOnnx]
   );
 
   useEffect(() => {
     if (bank && rounds.length === 0) {
-      void startSession(mode, preferLiveGpu);
+      void startSession(mode, preferLiveGpu, preferBrowserOnnx);
     }
-  }, [bank, mode, preferLiveGpu, rounds.length, startSession]);
+  }, [bank, mode, preferBrowserOnnx, preferLiveGpu, rounds.length, startSession]);
 
   const handleModeChange = (nextMode: ArenaModeId) => {
     setMode(nextMode);
-    void startSession(nextMode, preferLiveGpu);
+    void startSession(nextMode, preferLiveGpu, preferBrowserOnnx);
   };
 
   const handleToggleSource = () => {
-    const nextUseLive = !preferLiveGpu;
-    setPreferLiveGpu(nextUseLive);
-    void startSession(mode, nextUseLive);
+    if (isGpuConnected) {
+      const nextUseLive = !preferLiveGpu;
+      setPreferLiveGpu(nextUseLive);
+      void startSession(mode, nextUseLive, false);
+    } else {
+      const nextOnnx = !preferBrowserOnnx;
+      setPreferBrowserOnnx(nextOnnx);
+      void startSession(mode, false, nextOnnx);
+    }
   };
 
   const handleSelectToken = useCallback(
@@ -236,30 +263,38 @@ export function ArenaView({ theme, isGpuConnected, onFetchLiveSession }: ArenaVi
         </div>
 
         <div className="flex items-center gap-3 font-sans text-xs text-[var(--ink-muted)]">
-          {isGpuConnected ? (
-            <button
-              type="button"
-              data-testid="arena-source-toggle"
-              onClick={handleToggleSource}
-              className="flex items-center gap-2 rounded-[4px] border border-[var(--rule-strong)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:border-[var(--sig-h1)]"
-              title="Переключить источник раундов (Static банк / Live GPU случайный срез)"
-            >
-              <span
-                className="h-1.5 w-1.5 rounded-full"
-                style={{
-                  backgroundColor:
-                    sourceLabel === "live_gpu" ? "var(--sig-gpu)" : "var(--ink-muted)",
-                }}
-              />
-              {loadingSession
+          <button
+            type="button"
+            data-testid="arena-source-toggle"
+            onClick={handleToggleSource}
+            className="flex items-center gap-2 rounded-[4px] border border-[var(--rule-strong)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:border-[var(--sig-h1)]"
+            title={
+              isGpuConnected
+                ? "Переключить источник раундов (Static банк / Live GPU случайный срез)"
+                : "Переключить между статическим банком и живым ONNX-инференсом прямо в браузере"
+            }
+          >
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                backgroundColor:
+                  sourceLabel === "live_gpu"
+                    ? "var(--sig-gpu)"
+                    : sourceLabel === "browser_onnx"
+                      ? "var(--sig-h1)"
+                      : "var(--ink-muted)",
+              }}
+            />
+            {loadingSession
+              ? isGpuConnected
                 ? "Генерация на GPU…"
-                : sourceLabel === "live_gpu"
-                  ? "Live GPU · случайный срез"
+                : "Инференс ONNX в браузере…"
+              : sourceLabel === "live_gpu"
+                ? "Live GPU · случайный срез"
+                : sourceLabel === "browser_onnx"
+                  ? "Живой ONNX в браузере (свежий поток)"
                   : "Реальные чекпойнты · Static"}
-            </button>
-          ) : (
-            <span>Реальные чекпойнты · Static</span>
-          )}
+          </button>
         </div>
       </div>
 
@@ -314,7 +349,7 @@ export function ArenaView({ theme, isGpuConnected, onFetchLiveSession }: ArenaVi
               if (soundEnabled) playToggleClick(true);
             }}
             onToggleSound={() => setSoundEnabled((s) => !s)}
-            onNewGame={() => void startSession(mode, preferLiveGpu)}
+            onNewGame={() => void startSession(mode, preferLiveGpu, preferBrowserOnnx)}
             onSubmitBlindVerdict={(v) => {
               setBlindVerdict(v);
               setPhase("debrief");
@@ -333,7 +368,7 @@ export function ArenaView({ theme, isGpuConnected, onFetchLiveSession }: ArenaVi
               blindVerdict={blindVerdict}
               inspectIdx={inspectIdx}
               onInspectRound={(idx) => setInspectIdx(idx)}
-              onPlayAgain={() => void startSession(mode, preferLiveGpu)}
+              onPlayAgain={() => void startSession(mode, preferLiveGpu, preferBrowserOnnx)}
               onSwitchMode={handleModeChange}
             />
           )}
